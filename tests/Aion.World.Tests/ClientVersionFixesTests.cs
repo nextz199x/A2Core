@@ -170,4 +170,30 @@ public sealed class ClientVersionFixesTests
         Assert.Equal(0xE32B, GameSession.ArenaRecordRq);
         Assert.Equal(0xE32C, GameSession.ArenaRecordRs);
     }
+
+    [Fact]
+    public void Airspace_abyss_world_map_and_reward_limits_use_the_2_0_12_opcodes()
+    {
+        Assert.Equal(0x4300, GameSession.AirspaceBattleRq);
+        Assert.Equal(0x430C, GameSession.CharAirspacePointNt);
+        Assert.Equal(0x6302, GameSession.AbyssRiftProgressInfoRq);
+        Assert.Equal(0x9100, GameSession.WorldMapContentsInfoRq);
+        Assert.Equal(0x910B, GameSession.WorldMapAbyssRankerInfoRq);
+        Assert.Equal(0xE273, GameSession.RankingPointUpdateNt);
+        Assert.Equal(0xFFAB, GameSession.AbyssPointUpdateNt);
+        Assert.Equal(0xFFA9, GameSession.RewardLimitUpdateNt);
+        Assert.Equal(0x9322, GameSession.DungeonCoolTimesNt);
+    }
+
+    [Fact]
+    public void Force_achievements_and_skill_customizing_use_the_2_0_12_opcodes()
+    {
+        Assert.Equal(0x9600, SocialOpcodes.ForceCreateRq);
+        Assert.Equal(0x9624, SocialOpcodes.ForceMemberItemLootingNt);
+        Assert.Equal(0x9633, SocialOpcodes.ForceJoinRq);
+        Assert.Equal(0xE32F, GameSession.CloseNpcAchievementRq);
+        Assert.Equal(0xE332, GameSession.CloseEnvObjAchievementRs);
+        Assert.Equal(0x3845, GameSession.SkillCustomizingUpdateRq);   // CANDIDATE: RS is 0x3846
+        Assert.Equal(0x3846, GameSession.SkillCustomizingUpdateRs);
+    }
 }

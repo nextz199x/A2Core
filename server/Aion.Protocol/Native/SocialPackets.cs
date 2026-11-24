@@ -63,8 +63,8 @@ public static class SocialOpcodes
         PartyDisbandRq = PartyBase + 1066, PartyDisbandRs = PartyBase + 1067, PartyDisbandNt = PartyBase + 1068,
         PartySetTargetByBossNt = PartyBase + 1069, PartyDisconnectMemberNt = PartyBase + 1070, PartyReconnectMemberNt = PartyBase + 1071,
         PartyMemberItemLootingNt = PartyBase + 1072, PartyMemberItemLootingFailNt = PartyBase + 1073,
-        ForceMemberItemLootingNt = 0x3aae, ForceMemberItemLootingFailNt = 0x3aaf,
-        ForceCreateRq = 0x3a8a, ForceCreateRs = 0x3a8b, ForceJoinRq = 0x3abd, ForceJoinRs = 0x3abe,
+        ForceMemberItemLootingNt = 0x9624, ForceMemberItemLootingFailNt = 0x9625,
+        ForceCreateRq = 0x9600, ForceCreateRs = 0x9601, ForceJoinRq = 0x9633, ForceJoinRs = 0x9634,
         PartyRecommendRq = PartyBase + 1077, PartyRecommendRs = PartyBase + 1078,
         PartyInviteCancelRq = PartyBase + 1079, PartyInviteCancelRs = PartyBase + 1080, PartyInviteCancelNt = PartyBase + 1081;
 
@@ -445,11 +445,11 @@ public static class SocialPackets
     public static byte[] PartyMemberItemLooting(string nickname, int serverId, int dropItemId) =>
         Op(SocialOpcodes.PartyMemberItemLootingNt).String(nickname).I32(serverId).I32(dropItemId).ToArray();
 
-    /// <summary>ForceMemberItemLooting_NT (0x3AAE): alliance member received distributed loot.</summary>
+    /// <summary>ForceMemberItemLooting_NT (0x9624): alliance member received distributed loot.</summary>
     public static byte[] ForceMemberItemLooting(string nickname, int serverId, int dropItemId) =>
         Op(SocialOpcodes.ForceMemberItemLootingNt).String(nickname).I32(serverId).I32(dropItemId).ToArray();
 
-    /// <summary>ForceCreate_RS (0x3A8B): result, force key.</summary>
+    /// <summary>ForceCreate_RS (0x9601): result, force key.</summary>
     public static byte[] ForceCreateReply(int result, long forceKey) =>
         Op(SocialOpcodes.ForceCreateRs).U16(result).I64(forceKey).ToArray();
 
