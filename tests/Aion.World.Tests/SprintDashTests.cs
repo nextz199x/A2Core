@@ -87,9 +87,9 @@ public sealed class SprintDashTests
         Assert.DoesNotContain(off, p => GameSessionTestHelpers.Op(p) is 0x3742 or 0x3722);
         Assert.Contains(off, p => GameSessionTestHelpers.Op(p) == 0x3741);
         Assert.True(session.IsSprinting);
-        // The next off (past the opening window) still ends the sprint normally.
-        var later = await session.HandleAsync(new PacketWriter().U16(0x3705).I64(1).ToArray(), Now + 1000);
-        Assert.Contains(later, p => GameSessionTestHelpers.Op(p) == 0x3742);
+        // Only one re-assert: a second off ends the sprint even inside the window.
+        var second = await session.HandleAsync(new PacketWriter().U16(0x3705).I64(1).ToArray(), Now + 120);
+        Assert.Contains(second, p => GameSessionTestHelpers.Op(p) == 0x3742);
         Assert.False(session.IsSprinting);
     }
 

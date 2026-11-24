@@ -274,6 +274,8 @@ public sealed partial class GameSession(GameData data, GameSessionOptions option
     public bool HasPendingSprintReply => pendingSprintReply is not null;
     public bool IsSprinting => sprinting;
     long sprintOnAt;
+    /// <summary>One re-assert per sprint start (variant 11): the client's roll off is answered with the sprint ack once.</summary>
+    bool sprintReassertUsed;
     /// <summary>The standing dodge's pending effect: the start's action uid and when it is due.</summary>
     (int Action, long At)? dodgeEffectAt;
     /// <summary>Seconds spent gliding, flying or swimming since the last whole minute counted (ElapsedTime achievements).</summary>
@@ -852,6 +854,7 @@ public sealed partial class GameSession(GameData data, GameSessionOptions option
         sprintTickAt = now + SprintTickMs;
         ResetFpTick(now);
         sprintOnAt = now;
+        sprintReassertUsed = false;
         worldPlayer?.Map?.Broadcast(worldPlayer, [PlayerPackets.SprintOn(playerKey)]);
         // The client follows the sprint start with its own CombatDodge request (live 2026-10-20, 4 ms later), which CastReplies
         // turns into the running dash (NormalDodge) while the sprint is on, as the official server did.
@@ -972,9 +975,10 @@ public sealed partial class GameSession(GameData data, GameSessionOptions option
         // Variant 11: the client ends the sprint itself right after its opening roll is accepted (live 01:32/02:13: 0x3705
         // 16 ms after the batch). A sprint started on a mount keeps running on foot after the dismount, so the client can
         // hold sprint on foot; re-assert it once instead of ending it, and see whether the ack re-enters the state.
-        if (DashVariant == 11 && sprinting && !dead && resources is { Sp: > 0 }
+        if (DashVariant == 11 && sprinting && !sprintReassertUsed && !dead && resources is { Sp: > 0 }
             && now - sprintOnAt <= SprintAutoDodgeWindowMs + 100)
         {
+            sprintReassertUsed = true;
             var held = TakePendingSprint();
             if (pendingDashBatch is { } pendingDash)
             {
