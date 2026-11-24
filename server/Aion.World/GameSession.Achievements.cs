@@ -688,7 +688,10 @@ public sealed partial class GameSession
             batch.AddRange(await AutoUseAcquiredItemsAsync(rewardItems, now, ct, deferAutoUseTitles: true));
             batch.AddRange(await AutoPresentGrantedTitlesAsync(rewardItems, ct));
         }
-        if (refreshAccountContents) batch.Add(AccountContentsInfoList(now));
+        // The attendance tabs also use AccountContentsInfo (check/reward day) to decide whether today's button
+        // is claimable. Refresh it on empty/partial claims too; otherwise 0x568a can be a successful no-op while
+        // the client still has yesterday's or an unclaimed reward-day value cached.
+        if (refreshAccountContents || category == 7) batch.Add(AccountContentsInfoList(now));
         return batch;
     }
 

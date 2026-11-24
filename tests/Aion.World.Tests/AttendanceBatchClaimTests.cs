@@ -39,6 +39,7 @@ public sealed class AttendanceBatchClaimTests
 
         Assert.DoesNotContain(again, p => Op(p) == GameSession.AchievementCountUpdateNt);
         Assert.Contains(again, p => Op(p) == GameSession.AchievementListNt);   // no-op still redraws the tabs
+        Assert.Contains(again, p => Op(p) == GameSession.AccountContentsInfoListNt); // refresh check/reward day too
         Assert.Equal(1, session.AchievementCount(board.Achievement));
     }
 
