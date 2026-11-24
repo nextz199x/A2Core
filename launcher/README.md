@@ -1,0 +1,212 @@
+# A2Core Launcher (the player program, Windows)
+
+`A2Core Launcher.exe` (project AionLauncher) sets up a private copy of AION2 at the one build the server
+supports and starts it against our server. It ships no NCSoft files: the game comes from the player's
+own Steam account. One self-contained exe: downloaded, it offers to install itself for the Windows user
+(`%LOCALAPPDATA%\Programs\A2Core Launcher`, desktop and Start menu shortcuts, an Apps & features entry whose
+uninstall runs `--uninstall`; no administrator rights), or runs where it is ("Run without installing",
+remembered). The installed copy is the one the self-update replaces.
+Design and evidence: `research/client-installer.md`.
+
+## Projects
+
+- `Aion.Launcher.Core/`: Steam metadata (libraryfolders.vdf, appmanifest, binary appinfo.vdf launch
+  arguments), the supported-build reference and file checks/placement, GamePlatform.ini, hosts and
+  firewall text, DNS redirect map parsing, the account API client. Cross-platform; tested by `tests/Aion.Launcher.Checks`.
+- `Aion.Launcher.BuildTool/`: console tool (net10.0, Linux-friendly) that signs in with Steam QR,
+  reads the latest public depot manifest from Steam, downloads the quick file set for SHA-256, and
+  writes `supported-build.json` (manifest SHA-1 for other files). See **Regenerating supported-build.json**.
+- `AionLauncher/`: the WinForms app and its elevated helper modes.
+- `A2Core.Redirect/`: optional Windows x64 hook DLL (CMake + MinHook); injected in the default play path.
+- `supported-build.json`: every file of the supported Steam depot manifest (path, size, hashes).
+  Embedded in the launcher; regenerate with the BuildTool (or the local fallback below; do not hand-edit).
+- `launcher.json`: the server (account URL, IPv4 address, bootstrap port, private saved-folder suffix).
+  `accountUrl` must be `https://` except on loopback (`http://127.0.0.1`, `http://localhost`, or `http://[::1]`).
+  Embedded; a `launcher.json` next to the exe overrides it. Optional `certificateThumbprint` (below).
+
+## Settings without rebuilding: launcher.json next to the exe, or arguments
+
+The settings are read in this order, each overriding the one before:
+
+1. the `launcher.json` built into the exe;
+2. a `launcher.json` next to the exe (or the file `--config <path>` names): a prebuilt launcher plus the server's
+   own `launcher.json` needs no rebuild;
+3. command-line arguments, for single values (`--ip=1.2.3.4` or `--ip 1.2.3.4`):
+
+| Argument | Sets |
+|---|---|
+| `--ip` | `serverAddress`; the account URL's host follows it unless `--account-url` is given |
+| `--account-url` | `accountUrl` (`https://`, or `http://` on loopback only) |
+| `--port` | `bootstrapPort` |
+| `--pin` | `certificateThumbprint` (repeat for several; last wins) |
+| `--name` | `name` |
+| `--saved-suffix` | `savedDirSuffix` |
+| `--config` | another launcher.json to start from |
+
+A server on a bare IP with a self-signed certificate needs two: `--ip=192.168.22.33 --pin=<40-hex thumbprint>`. The file stays the
+normal way to hand out a server's settings; arguments are for trying other servers. When the launcher installs itself
+it writes the settings it runs with as `launcher.json` in its program folder, so the installed copy keeps them.
+- `AionLauncher/icon.ico` (exe, window, taskbar, shortcuts) and `AionLauncher/emblem.png` (the rail): the "AH"
+  emblem artwork (user-supplied PNG, 1254 px), cropped to the central 77 % and resized with Pillow;
+  the ico holds 16-256 px.
+
+## What it does
+
+A guided window with four steps (Sign in, Get the game, Install, Play). Each step works out the
+next one itself; the player only confirms and answers Windows prompts.
+
+1. Sign in at the account API first (no 88 GB download for someone without an account). "Keep me signed
+   in on this PC" (on by default) asks for a 30-day session and keeps its token in the settings file,
+   DPAPI-encrypted for the Windows user (never the password); the next start continues without the
+   sign-in page until the server ends the session or the player signs out. Unticked, the session ends
+   when the launcher closes.
+   Then the launcher asks the server for its launcher's hash (`GET /api/downloads/launcher/manifest`).
+   When the server's file differs from the running exe, it says so and offers **Install update**; the
+   player chooses ("Not now" continues). Installing downloads the file through the ticket link next to
+   the exe (`A2Core Launcher.exe.new`), checks the SHA-256, renames the running exe to `A2Core Launcher.exe.old`,
+   moves the download into place and starts it; the next start removes the old file. `A2Core Launcher.exe.version`
+   next to the server's file (optional) is the version shown. `AION_LAUNCHER_NO_UPDATE=1` skips the check
+   (development builds).
+2. Get the game. If the Steam install is still the supported build it is hard-linked (same drive,
+   no extra space) or copied. Otherwise the launcher downloads it from Steam itself
+   (`Aion.Launcher.Core/SteamDownload.cs`, SteamKit2): the player signs in by scanning a QR code with
+   the Steam mobile app (no password reaches the launcher), then the launcher asks for the depot key
+   and the manifest request code of depot 3393111 manifest 1699273097574069541 and fetches every
+   chunk from Steam's content servers into the private folder (16 chunks in parallel, each checked
+   against its SHA-1 id; a bad chunk is fetched again from another server). The folder is
+   `%LOCALAPPDATA%\A2CorePrivate\AION2` when the system drive has room, else `<drive>:\A2CorePrivate\AION2`
+   on the fixed drive with the most free space. Pausing or closing keeps the download: finished
+   files are listed in `.download-state`, other existing chunks are kept when their SHA-1 matches,
+   and the Steam refresh token is kept (DPAPI, current Windows user) so resuming needs no new scan;
+   it is deleted when the game is installed. "I already have this version in another folder" uses an
+   existing copy (for example a finished Steam console `download_depot` folder) in place.
+3. Install: a download is used where it is; a Steam-install source is placed on its own drive. The
+   quick hash check runs (game binary and pak index files). Then, elevated once (UAC): firewall rules named "Private game server" for
+   every exe in the copy, blocking all remote addresses except loopback and the server, in and out.
+
+The reference lists only files the depot contains. A copy that has been run also holds files the
+game creates: `Aion2/InstallLog.txt` and NCGuard's `Aion2/Binaries/Win64/NCGuard/bb64.dll`
+(15.8 MB, not the 7.7 MB `Plugins/NCGuardSDK` copy). Whether a fresh copy creates that module while
+NC's addresses point at our server is not yet tested.
+
+Play:
+1. Checks sizes (and re-hashes the quick set when those files changed).
+2. Gets a launch authorization and writes
+   `%LOCALAPPDATA%\AION2\Saved_A2CorePrivate\Config\Windows\GamePlatform.ini` with
+   `ConfigurationServerUrl="http://<server>:8087/c/<authorization>"` (the official Saved_Steam is not touched).
+3. Points the six NC hostnames at the server. Default **`redirectMode`: `inject`** (no hosts-file edit, no UAC):
+   the launcher starts `AION2.exe` suspended, injects `A2Core.Redirect.dll` (hooks `GetAddrInfoW`,
+   `GetAddrInfoExW`, `getaddrinfo`, `gethostbyname` in ws2_32 using the map in `A2Core.Redirect.map` or
+   `A2CORE_REDIRECT`), then resumes. If the DLL is missing or injection fails, it logs to
+   `%LOCALAPPDATA%\A2CorePrivate\redirect.log` and falls back to the legacy **hosts** path (elevated per
+   session; the helper removes lines when the private copy's processes exit).
+4. Starts AION2.exe unelevated with Steam's cached launch arguments, `-saveddirsuffix=A2CorePrivate`
+   (inject mode uses CREATE_SUSPENDED before resume).
+The session stays signed in for further plays; it signs out when the launcher closes unless it is kept.
+
+Set `"redirectMode": "hosts"` in `launcher-settings.json` or `launcher.json` to force the legacy
+hosts helper. Build the redirect DLL on Windows: `launcher/A2Core.Redirect/README.md`.
+
+**Not yet verified:** in-game NCGuard behaviour with inject-mode DNS redirect (hosts mode is the
+previously tested path).
+
+Uninstall (the Play page, or Apps & features) removes the firewall rules, any hosts lines, the settings,
+the installed program with its shortcuts and (if chosen) the private copy.
+
+## Client versions
+
+The Play page has a **Client version** dropdown (dark theme, like the rest). The choice is stored as
+`selectedClientVersion` in the `launcher.json` next to the exe (created from the embedded one if missing;
+other keys are kept).
+
+- `2.0.9.0` (default): the launcher's private copy, checked against `supported-build.json`, with the
+  firewall rules and the optional Client Editor patch paks, exactly as before.
+- `Official latest (Steam)` (`steam-latest`): the player's own Steam install, started in place and
+  **read-only**: no file in the Steam folder is written, so no patch paks (they would land in its Paks
+  folder), no size/hash check (it is newer than the reference) and no firewall rules (they are per exe
+  path and would also block the official game). The redirect works without touching game files: the
+  private `Saved_A2CorePrivate\...\GamePlatform.ini` (via `-saveddirsuffix=A2CorePrivate`) plus the
+  per-session hosts lines. The folder is `clientPath` of the version, else `steamClientPath`, else the
+  AION2 folder found through Steam's `libraryfolders.vdf`.
+  The Steam copy counts as installed for this version whatever its build, and when the private build is not on the
+  PC yet and Steam has moved past it (every official patch, e.g. 2026-11-11), the download page offers
+  "Use my Steam copy" next to the 88 GB download, so the version picker on the Play page is not the only way to it.
+
+The server still runs 2.0.6.0 data and opcodes and has no client-version check, so a newer client may
+start but fail or misbehave in-game. Optional keys:
+
+```json
+"steamClientPath": "Z:\\SteamLibrary\\steamapps\\common\\AION2",
+"selectedClientVersion": "steam-latest",
+"clientVersions": [
+  { "id": "2.0.9.0", "name": "2.0.9.0", "kind": "private" },
+  { "id": "steam-latest", "name": "Official latest (Steam)", "kind": "steam", "launchArgs": [] }
+]
+```
+
+Each entry may set `clientPath` (its game folder) and `launchArgs` (added after Steam's arguments).
+## Third-party components
+
+SteamKit2 (LGPL-2.1, https://github.com/SteamRE/SteamKit) and QRCoder (MIT) are NuGet packages
+bundled into the single-file exe. Steam's console `download_depot` (and DepotDownloader, GPL-2.0, not
+used) download the same manifest.
+
+## Build and publish
+
+```powershell
+dotnet run --project tests/Aion.Launcher.Checks
+# Linux (or deploy/linux/build_launcher.sh): launcher/A2Core.Redirect/build-mingw.sh first
+dotnet publish launcher/AionLauncher -c Release -r win-x64 -o research/local/launcher-publish -p:DebugType=none -p:EnableWindowsTargeting=true
+echo 0.6.1 > "research/local/launcher-publish/A2Core Launcher.exe.version"
+scp "research/local/launcher-publish/A2Core Launcher.exe" "research/local/launcher-publish/A2Core Launcher.exe.version" root@<server>:/var/lib/aion/downloads/
+```
+
+## Regenerating supported-build.json
+
+When the server moves to a new official Steam build:
+
+1. On a machine with the game in the Steam library, run (Linux or Windows with .NET 10):
+
+   ```bash
+   dotnet run --project launcher/Aion.Launcher.BuildTool -- \
+     --out launcher/supported-build.json \
+     --qr-png /tmp/steam-qr.png \
+     --token-file ~/.config/aion2-buildtool-steam-token.json
+   ```
+
+   Scan the QR code in the Steam mobile app. The tool queries Steam for the **latest public** manifest
+   of depot 3393111 (override with `--manifest <gid>` if needed), downloads only the quick set
+   (`AION2.exe`, `Paks/*.utoc`, `Paks/*.sig`) for SHA-256, and records size plus depot SHA-1 for
+   every other file. Optional `steamBuildId` comes from Steam PICS.
+
+2. Commit `launcher/supported-build.json` and rebuild/publish the launcher so the embedded copy updates.
+
+### Local fallback (no Steam sign-in)
+
+On the machine that already has the supported build installed, the reference can be built
+without a Steam account or QR:
+
+```bash
+python tools/local_supported_build.py
+```
+
+It reads `buildid`/`manifest` from `steamapps/appmanifest_3393110.acf`, hashes the installed
+quick set for SHA-256 and every other file for SHA-1, and writes `launcher/supported-build.json`.
+The result pins the **installed** build, so run it before updating the client. `--sha1 none`
+is faster but leaves no hashes for the full verify/repair check. Commit the JSON and rebuild
+the launcher as above.
+
+Legacy: `tools/launcher_build.py --manifest-id <gid> …` from a full local `verification.json` still
+works but requires a verified on-disk copy and SHA-256 for all files.
+
+Signed-in players then see "Download A2Core Launcher" on the account page (a five-minute link from
+POST /api/downloads/launcher; `/download/launcher` needs that ticket and saves as `A2Core Launcher.exe`).
+Installed copies offer the new file at their next start (the version in `A2Core Launcher.exe.version` is what they show; keep
+it equal to `<Version>` in AionLauncher.csproj).
+
+## Not yet verified (CANDIDATE)
+
+- A full run on a second PC: remote certificate acceptance by the client, Steam ownership checks
+  without our dev tools, the per-session hosts helper, and the firewall rules with a remote server.
+- Whether Steam still serves manifest 1699273097574069541 to `download_depot`.
+- The exe is not code-signed: Windows SmartScreen warns on first start ("More info" -> "Run anyway").
