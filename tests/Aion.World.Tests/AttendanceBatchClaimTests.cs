@@ -38,6 +38,7 @@ public sealed class AttendanceBatchClaimTests
         Assert.Equal(0, BitConverter.ToInt32(rs, 2));   // nothing left is a successful no-op, not "try again"
 
         Assert.DoesNotContain(again, p => Op(p) == GameSession.AchievementCountUpdateNt);
+        Assert.Contains(again, p => Op(p) == GameSession.AchievementListNt);   // no-op still redraws the tabs
         Assert.Equal(1, session.AchievementCount(board.Achievement));
     }
 

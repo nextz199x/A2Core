@@ -84,8 +84,8 @@ public sealed class RideMountTests
     public void GetOnReply_and_notice_match_action_protocol_wire()
     {
         const int key = 416, ride = 1004;
-        var rs = RidePackets.GetOnReply(key, 0, ride);
-        Assert.Equal(Convert.FromHexString("0290A0030000EC030000000000"), rs);
+        var rs = RidePackets.GetOnReply(key, RidePackets.OnSuccess, ride);
+        Assert.Equal(Convert.FromHexString("0290A0032D3BEC030000000000"), rs);
         var nt = RidePackets.GetOnNotice(key, ride);
         Assert.Equal(Convert.FromHexString("0390A003EC030000000000"), nt);
     }
@@ -94,8 +94,8 @@ public sealed class RideMountTests
     public void GetOnReply_for_large_player_key_uses_varint_not_i32()
     {
         const int key = 100_001, ride = 1072;
-        var rs = RidePackets.GetOnReply(key, 0, ride, RidePackets.MoveModelRun, RidePackets.MoveTypeStop);
-        Assert.Equal(Convert.FromHexString("0290A18D06000030040000010000"), rs);
+        var rs = RidePackets.GetOnReply(key, RidePackets.OnSuccess, ride, RidePackets.MoveModelRun, RidePackets.MoveTypeStop);
+        Assert.Equal(Convert.FromHexString("0290A18D062D3B30040000010000"), rs);
     }
 
     [Fact]
@@ -107,12 +107,12 @@ public sealed class RideMountTests
         var reply = Assert.Single(mounted, p => GameSessionTestHelpers.Op(p) == RidePackets.GetOnRs);
         var reader = new PacketReader(reply) { Offset = 2 };
         Assert.Equal(session.PlayerKey, (int)reader.Varint());
-        Assert.Equal(0, reader.U16());
+        Assert.Equal(RidePackets.OnSuccess, reader.U16());
         Assert.Equal(PetRide, reader.I32());
         Assert.Equal(RidePackets.MoveModelRun, reader.U8());
         Assert.Equal(RidePackets.MoveTypeStop, reader.U8());
         Assert.Equal(PetRide, session.MountedRide);
-        Assert.Contains(mounted, p => GameSessionTestHelpers.Op(p) == RidePackets.GetOnNt);
+        Assert.DoesNotContain(mounted, p => GameSessionTestHelpers.Op(p) == RidePackets.GetOnNt);   // the NT is for others
         Assert.DoesNotContain(mounted, p => GameSessionTestHelpers.Op(p) == 0x3633);
         Assert.Contains(mounted, p => GameSessionTestHelpers.Op(p) == 0x364a);
     }

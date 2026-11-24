@@ -31,7 +31,7 @@ public sealed class MountAttendanceSorcererFixesTests
         var rs = Assert.Single(mounted, p => GameSessionTestHelpers.Op(p) == RidePackets.GetOnRs);
         var reader = new PacketReader(rs) { Offset = 2 };
         Assert.Equal(session.PlayerKey, (int)reader.Varint());
-        Assert.Equal(0, reader.U16());
+        Assert.Equal(RidePackets.OnSuccess, reader.U16());
         Assert.Equal(PetRide, session.MountedRide);
         Assert.True(store.RideRows.Single(r => r.RideId == PetRide).Owned);
     }

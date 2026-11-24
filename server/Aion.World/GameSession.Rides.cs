@@ -140,13 +140,13 @@ public sealed partial class GameSession
         mountSummonUntilMs = Environment.TickCount64 + 5000;
         var (moveState, moveSubstate) = MountMoveAckFields();
         var notice = RidePackets.GetOnNotice(playerKey, ride, moveState, moveSubstate, isSprinting: sprinting && moving);
+        // The NT is for the players around (the official dismounting player gets the RS only; #831/#1374).
         worldPlayer?.Map?.Broadcast(worldPlayer, [notice]);
         worldPlayer?.Map?.UpdateVisibility(worldPlayer, refresh: true);
         return
         [
             .. InterruptItemCast(),
-            RidePackets.GetOnReply(playerKey, 0, ride, moveState, moveSubstate, isSprinting: sprinting && moving),
-            notice,
+            RidePackets.GetOnReply(playerKey, RidePackets.OnSuccess, ride, moveState, moveSubstate, isSprinting: sprinting && moving),
             .. RefreshStats(),
         ];
     }
@@ -749,7 +749,7 @@ public sealed partial class GameSession
         var off = RidePackets.GetOffNotice(playerKey, RidePackets.ByClient, bySwap);
         worldPlayer?.Map?.Broadcast(worldPlayer, [off]);
         worldPlayer?.Map?.UpdateVisibility(worldPlayer, refresh: true);
-        return [RidePackets.GetOffReply(playerKey, 0), off, .. RefreshStats()];
+        return [RidePackets.GetOffReply(playerKey, RidePackets.OffSuccess, RidePackets.ByClient), .. RefreshStats()];
     }
 
     /// <summary>The server takes the player off its ride (a cast, death): 0x9006 to the player and those nearby.</summary>
