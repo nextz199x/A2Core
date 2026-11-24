@@ -381,6 +381,11 @@ public sealed partial class GameSession(GameData data, GameSessionOptions option
             case CharRenameRq when plain.Length >= 4: return await RenameCharacterAsync(plain, ct);
             case CharSlotSwapRq when plain.Length >= 4: return await SwapLobbySlotsAsync(plain, now, ct);
             case CharCustomizingListRq when plain.Length == 2: return await CharCustomizingListAsync(ct);
+            case CharCustomizingStatusCheckRq when plain.Length == 2: return [GamePackets.CharCustomizingStatusCheckReply()];
+            case CharCustomizingMetaDataRq when plain.Length == 2: return [GamePackets.CharCustomizingMetaDataReply()];
+            case CharCustomizingSettlementStatusRq when plain.Length == 2: return [GamePackets.CharCustomizingSettlementStatusReply()];
+            case CharCustomizingSettleRq when plain.Length >= 6:
+                return [GamePackets.CharCustomizingSettleReply(BitConverter.ToInt32(plain, 2))];
             case BookmarkRq when plain.Length >= 8 && resources is not null: return await BookmarkAsync(plain, now, ct);
         }
         if (InWorld && Opcode(plain) is LatestSeasonRankingRq or MySeasonRankingRq or TakePrevSeasonRankingRewardRq

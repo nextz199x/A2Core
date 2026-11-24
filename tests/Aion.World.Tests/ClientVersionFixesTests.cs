@@ -215,6 +215,17 @@ public sealed class ClientVersionFixesTests
     }
 
     [Fact]
+    public void Customizing_status_metadata_and_settlement_packets_match_2_0_12()
+    {
+        Assert.Equal(0x56A0, Op(GamePackets.CharCustomizingStatusCheckReply()));
+        Assert.Equal(0x56A6, Op(GamePackets.CharCustomizingMetaDataReply()));
+        Assert.Equal(0x56A8, Op(GamePackets.CharCustomizingSettlementStatusReply()));
+        var settle = GamePackets.CharCustomizingSettleReply(3);
+        Assert.Equal(0x56AA, Op(settle));
+        Assert.Equal(3, BitConverter.ToInt32(settle, 4));
+    }
+
+    [Fact]
     public void Party_dungeon_room_family_uses_the_2_0_12_opcodes()
     {
         Assert.Equal(0x9323, GameSession.PartyDungeonEnterRq);
