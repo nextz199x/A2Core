@@ -843,6 +843,8 @@ public sealed partial class GameSession(GameData data, GameSessionOptions option
 
     List<byte[]> SprintOn(long now)
     {
+        // Live test knob: .start-all/runtime/dash-variant.txt overrides the default on the next sprint request.
+        if (LiveTuning.DashVariant() is { } liveVariant) DashVariant = liveVariant;
         if (resources is null) return [];
         sprinting = resources.Sp > 0;
         sprintTickAt = now + SprintTickMs;

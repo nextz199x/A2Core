@@ -182,4 +182,24 @@ public sealed class SprintDashTests
         var dash = await session.HandleAsync(DodgeCast(), Now + 4);
         Assert.Equal([0x3801, 0x8d00, 0x3802], Opcodes(dash));
     }
+    [Fact]
+    public void Live_tuning_file_overrides_the_dash_variant()
+    {
+        var dir = Path.Combine(Path.GetTempPath(), "aion-live-tuning-" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(dir);
+        try
+        {
+            var path = Path.Combine(dir, "dash-variant.txt");
+            File.WriteAllText(path, "11\n");
+            Assert.Equal(11, LiveTuning.Read(path));
+            File.WriteAllText(path, "0");
+            File.SetLastWriteTimeUtc(path, DateTime.UtcNow.AddSeconds(2));
+            Assert.Equal(0, LiveTuning.Read(path));
+            File.WriteAllText(path, "99");
+            File.SetLastWriteTimeUtc(path, DateTime.UtcNow.AddSeconds(4));
+            Assert.Null(LiveTuning.Read(path));
+        }
+        finally { Directory.Delete(dir, recursive: true); }
+    }
+
 }
