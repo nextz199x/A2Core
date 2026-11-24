@@ -102,6 +102,9 @@ public sealed partial class GameSession : IMapEventHost
             selected = flushed;
     }
     long mapEventNow;
+    /// <summary>Last standing position check (EnterVolumePC/EnterSubZone) for an active map event.</summary>
+    long mapEventPositionCheckedAt;
+    const int MapEventPositionCheckMs = 500;
     static int nextMapEventId = 0x149942;   // the official run's id; one per run on this host
 
     /// <summary>Walk-in layer volumes: edge-triggered entry on 0x3701 (throttled / cell change).</summary>
@@ -745,6 +748,20 @@ public sealed partial class GameSession : IMapEventHost
             }
         }
         return DrainMapEvents();
+    }
+
+    /// <summary>
+    /// The player is standing still in a map-event volume: the client sends no position reports while idle, so
+    /// EnterVolumePC/EnterSubZone objectives would wait for the next move. Re-check the current position twice a
+    /// second, only while a run has such an objective open.
+    /// </summary>
+    List<byte[]> MapEventStandingPositionTick(long now)
+    {
+        if (position is not { } at || now - mapEventPositionCheckedAt < MapEventPositionCheckMs) return [];
+        var host = CopyOwner ?? this;
+        if (!host.mapEventRuns.Any(r => r.NeedsPositionCheck)) return [];
+        mapEventPositionCheckedAt = now;
+        return MapEventPosition(at, now);
     }
 
     List<byte[]> MapEventPosition(Vector3d at, long now)

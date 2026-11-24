@@ -3142,6 +3142,7 @@ public sealed partial class GameSession(GameData data, GameSessionOptions option
             // start by themselves here.
             arrivalCheckDue = false;
             replies.AddRange(MapEventPosition(arrivedAt, now));
+            mapEventPositionCheckedAt = now;
             fogCheckAt = 0;
             replies.AddRange(await UncoverFogAsync(arrivedAt, now, ct));
             replies.AddRange(await Stored(() => AutoAcquireAsync(ct)));
@@ -3243,6 +3244,7 @@ public sealed partial class GameSession(GameData data, GameSessionOptions option
         replies.AddRange(BuffTick(now));
         replies.AddRange(DropTick(now));
         replies.AddRange(MapEventTick(now));
+        replies.AddRange(MapEventStandingPositionTick(now));
         replies.AddRange(InstanceTick(now));
         replies.AddRange(AbyssTick(now));
         replies.AddRange(AirspaceWorldTick(now));
