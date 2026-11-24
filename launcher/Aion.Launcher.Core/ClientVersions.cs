@@ -1,0 +1,103 @@
+using System.Text.Json;
+using System.Text.Json.Nodes;
+using System.Text.Json.Serialization;
+
+namespace Aion.Launcher;
+
+/// <summary>
+/// One client the launcher can start. "private": the launcher's own copy of the supported build
+/// (downloaded or linked, checked against supported-build.json). "steam": the player's own Steam
+/// install, used read-only in place (no file is written there; no pak patch, no firewall rules).
+/// </summary>
+public sealed record ClientVersion(
+    [property: JsonPropertyName("id")] string Id,
+    [property: JsonPropertyName("name")] string Name,
+    [property: JsonPropertyName("kind")] string Kind,
+    [property: JsonPropertyName("clientPath")] string? ClientPath = null,
+    [property: JsonPropertyName("launchArgs")] string[]? LaunchArgs = null,
+    [property: JsonPropertyName("build"), JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] string? Build = null)
+{
+    public const string PrivateKind = "private", SteamKind = "steam";
+    public const string DefaultId = "2.0.12.0", SteamLatestId = "steam-latest";
+    public bool IsSteam => Kind.Equals(SteamKind, StringComparison.OrdinalIgnoreCase);
+
+    public static IReadOnlyList<ClientVersion> Defaults { get; } =
+    [
+        new(DefaultId, "2.0.12.0", PrivateKind),
+        new(SteamLatestId, "Official latest (Steam)", SteamKind),
+    ];
+}
+
+public static class ClientVersions
+{
+    /// <summary>The configured versions (launcher.json "clientVersions"), else the two defaults.</summary>
+    public static IReadOnlyList<ClientVersion> All(LauncherConfig config) =>
+        config.ClientVersions is { Length: > 0 } list ? list : ClientVersion.Defaults;
+
+    const string LegacyPrivateId = "2.0.6.0";
+
+    static ClientVersion? Find(IReadOnlyList<ClientVersion> all, string? id)
+    {
+        if (id is null) return null;
+        return all.FirstOrDefault(v => v.Id.Equals(id, StringComparison.OrdinalIgnoreCase))
+            ?? (id.Equals(LegacyPrivateId, StringComparison.OrdinalIgnoreCase)
+                ? all.FirstOrDefault(v => v.Id.Equals(ClientVersion.DefaultId, StringComparison.OrdinalIgnoreCase))
+                : null);
+    }
+
+    /// <summary>Kept per-server choice, else config selection, else the first (2.0.12.0).</summary>
+    public static ClientVersion Selected(LauncherConfig config, string? chosen = null)
+    {
+        var all = All(config);
+        return Find(all, chosen)
+            ?? Find(all, config.SelectedClientVersion)
+            ?? all[0];
+    }
+
+    /// <summary>
+    /// The Steam game folder for a "steam" version: its own clientPath, else launcher.json
+    /// "steamClientPath", else the AION2 folder found through Steam's libraryfolders.vdf. Null when none exists.
+    /// </summary>
+    public static string? SteamFolder(ClientVersion version, LauncherConfig config, SteamInstall? steam)
+    {
+        foreach (var path in new[] { version.ClientPath, config.SteamClientPath })
+            if (!string.IsNullOrWhiteSpace(path) && Directory.Exists(path)) return Path.GetFullPath(path);
+        return steam?.FindApp() is { } app ? Path.GetFullPath(app.Folder) : null;
+    }
+
+    /// <summary>
+    /// Whether a "steam" version's game is there to start: its folder (<see cref="SteamFolder"/>) holds the executable.
+    /// The Steam copy is used whatever its build, so this is its "installed".
+    /// </summary>
+    public static bool SteamReady(ClientVersion version, LauncherConfig config, SteamInstall? steam, string executable) =>
+        version.IsSteam && SteamFolder(version, config, steam) is { } folder && File.Exists(Path.Combine(folder, executable));
+
+    /// <summary>
+    /// The server's "steam" version when the player's Steam copy is there to start: the alternative to downloading the
+    /// private build once Steam has moved past it (every official patch). Null when the server offers none or no copy exists.
+    /// </summary>
+    public static ClientVersion? SteamAlternative(LauncherConfig config, SteamInstall? steam, string executable) =>
+        All(config).FirstOrDefault(v => SteamReady(v, config, steam, executable));
+
+    /// <summary>Steam's launch arguments for the game plus the version's extra ones (duplicates dropped).</summary>
+    public static string[] Arguments(IEnumerable<string> steamArguments, ClientVersion version)
+    {
+        var list = steamArguments.ToList();
+        foreach (var extra in version.LaunchArgs ?? [])
+            if (!string.IsNullOrWhiteSpace(extra) && !list.Contains(extra, StringComparer.OrdinalIgnoreCase)) list.Add(extra);
+        return [.. list];
+    }
+
+    /// <summary>
+    /// Stores the selection in launcher.json (the file next to the exe; created from <paramref name="config"/>
+    /// when missing). Only "selectedClientVersion" changes; other keys are kept as written.
+    /// </summary>
+    public static void SaveSelection(string path, LauncherConfig config, string id)
+    {
+        JsonObject root = File.Exists(path) && JsonNode.Parse(File.ReadAllText(path)) is JsonObject existing
+            ? existing
+            : JsonSerializer.SerializeToNode(config with { SelectedClientVersion = null })!.AsObject();
+        root["selectedClientVersion"] = id;
+        File.WriteAllText(path, root.ToJsonString(new JsonSerializerOptions { WriteIndented = true, DefaultIgnoreCondition = JsonIgnoreCondition.WhenWritingNull }));
+    }
+}

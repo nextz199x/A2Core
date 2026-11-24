@@ -119,7 +119,7 @@ The Play page has a **Client version** dropdown (dark theme, like the rest). The
 `selectedClientVersion` in the `launcher.json` next to the exe (created from the embedded one if missing;
 other keys are kept).
 
-- `2.0.9.0` (default): the launcher's private copy, checked against `supported-build.json`, with the
+- `2.0.12.0` (default): the launcher's private copy, checked against `supported-build.json`, with the
   firewall rules and the optional Client Editor patch paks, exactly as before.
 - `Official latest (Steam)` (`steam-latest`): the player's own Steam install, started in place and
   **read-only**: no file in the Steam folder is written, so no patch paks (they would land in its Paks
@@ -132,14 +132,14 @@ other keys are kept).
   PC yet and Steam has moved past it (every official patch, e.g. 2026-11-11), the download page offers
   "Use my Steam copy" next to the 88 GB download, so the version picker on the Play page is not the only way to it.
 
-The server still runs 2.0.6.0 data and opcodes and has no client-version check, so a newer client may
+The server data and opcodes target 2.0.12 (Steam build 26728906); a client of another build may
 start but fail or misbehave in-game. Optional keys:
 
 ```json
 "steamClientPath": "Z:\\SteamLibrary\\steamapps\\common\\AION2",
 "selectedClientVersion": "steam-latest",
 "clientVersions": [
-  { "id": "2.0.9.0", "name": "2.0.9.0", "kind": "private" },
+  { "id": "2.0.12.0", "name": "2.0.12.0", "kind": "private" },
   { "id": "steam-latest", "name": "Official latest (Steam)", "kind": "steam", "launchArgs": [] }
 ]
 ```
