@@ -334,10 +334,14 @@ partial class GameSession
                 LogBombPlantRefused(reply, skill, readyRefusal);
                 return [GroundReply(reply, GroundSkillRefused, skill)];
             }
-            // 1 is the client's "enter the ground-aim" answer (the old code sent it after planting, which is why the
-            // ring appeared with the bomb already gone). It must not consume the bomb.
+            // 0x384c SkillGroundReady_NT {key, skill, EActMoveType=Ground} is what puts the client into its
+            // aiming ring; the RS alone (result 0 or 1) left it waiting. Ready must not consume the bomb.
             Note($"map_event:bomb_aim:skill={skill} carrying={CarriedGroup}");
-            return [GroundReply(reply, GroundSkillRefused, skill)];
+            return
+            [
+                GroundReply(reply, 0, skill),
+                PacketWriter.Opcode(0x384c).Varint((uint)playerKey).I32(skill).U8(1).ToArray(),
+            ];
         }
         var refusal = BombPlantRefusalReason(now, skill);
         if (refusal is not "ok")
