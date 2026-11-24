@@ -899,6 +899,10 @@ public sealed partial class GameSession(GameData data, GameSessionOptions option
         {
             pendingDashBatch = null;
             replies.AddRange(dash);
+            // The dash batch already carries the post-dash SP (0x8d00). The official server's first sprint tick lands
+            // 100 ms after that batch (capture 20261124 #1421 at +63 ms, SP drain at +163 ms), so restart the drain
+            // here instead of letting the same turn append a second 0x8d00 with a 500 lower value.
+            if (sprinting) sprintTickAt = now + SprintTickMs;
             worldPlayer?.Map?.Broadcast(worldPlayer, replies.Where(SharedCastPacket));
         }
         return replies;

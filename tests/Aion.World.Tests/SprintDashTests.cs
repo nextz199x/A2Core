@@ -38,6 +38,41 @@ public sealed class SprintDashTests
     }
 
     [Fact]
+    public async Task Late_dash_flush_does_not_append_a_second_sp_update_in_the_same_write()
+    {
+        // Live 01:32: the tick that flushed the batch ran 110 ms after 0x3704, so the 100 ms sprint tick drained and
+        // wrote a second 0x8d00 right after the batch. The official write carries one SP update; the next drain is
+        // 100 ms after the batch.
+        var store = new FakeCharacterStore { Progress = (10, 0) };
+        var session = await GameSessionTestHelpers.EnterWorldAsync(store, Now, level: 10);
+        await session.HandleAsync(SprintOn(), Now);
+        await session.HandleAsync(DodgeCast(), Now + 16);
+        var flush = await session.TickAsync(Now + 110);
+        Assert.Single(flush, p => GameSessionTestHelpers.Op(p) == 0x8d00);
+        var spAfterDash = session.Resource!.Sp;
+        Assert.DoesNotContain(await session.TickAsync(Now + 150), p => GameSessionTestHelpers.Op(p) == 0x8d00);
+        var drain = await session.TickAsync(Now + 220);
+        var sp = Assert.Single(drain, p => GameSessionTestHelpers.Op(p) == 0x8d00);
+        Assert.Equal(spAfterDash - GameSession.SprintDrain, SpOf(sp));
+    }
+
+    static int SpOf(byte[] packet)
+    {
+        var reader = new PacketReader(packet) { Offset = 2 };
+        _ = reader.Varint();          // key
+        var mask = reader.U8();
+        Assert.True((mask & 1) != 0);
+        var count = checked((int)reader.Varint());
+        for (var i = 0; i < count; i++)
+        {
+            var type = reader.U8();
+            var value = reader.I32();
+            if (type == (byte)CharPoint.Sp) return value;
+        }
+        throw new Xunit.Sdk.XunitException("no SP entry");
+    }
+
+    [Fact]
     public void Dodge_result_matches_the_official_flags_first_wire()
     {
         // Official capture 20261124-130131 #1418: 01 38 | 00 (flags) | 00 00 (result) | 24 D9 A7 00 (CombatDodge).
