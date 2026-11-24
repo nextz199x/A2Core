@@ -78,6 +78,30 @@ public sealed class AttendanceCollectRewardsTests
     }
 
     [Fact]
+    public async Task Atreias_call_group_510035_claims_its_day_from_the_live_request()
+    {
+        // Live client trace 20261124: 0x5689 body 07 53C80700 00 = category 7, group 0x0007C853 (510035), only false.
+        var store = new FakeCharacterStore();
+        var session = await GameSessionTestHelpers.EnterWorldAsync(store, Now, level: 55);
+        var reward = AchievementTables.Embedded.Of(AtreiaAchievement)!.StepRewards(1)[0];
+        await session.HandleAsync([0x4d, 0xe3], Now + 100);
+        var before = store.Items.Where(i => i.TemplateId == reward.ItemId).Sum(i => i.Quantity);
+
+        var collect = await session.HandleAsync(
+            new PacketWriter().U16(GameSession.TakeAchievementRewardBatchRq).U8(7).I32(510_035).U8(0).ToArray(),
+            Now + 101);
+
+        Assert.Equal(0, BitConverter.ToInt32(Assert.Single(collect, p => Op(p) == GameSession.TakeAchievementRewardBatchRs), 2));
+        Assert.Equal(1, Assert.Single(store.Achievements, a => a.Id == AtreiaAchievement).RewardedStep);
+        Assert.True(store.Items.Where(i => i.TemplateId == reward.ItemId).Sum(i => i.Quantity) >= before + reward.Count);
+        var todayKey = ContentResetSchedule.GameDayKey(Now + 101);
+        var board = GameSession.LatestAttendanceSeasons(1, Now + 101).Single(e => e.Board.Achievement == AtreiaAchievement).Board;
+        var entry = Assert.Single(Parse56b6(Assert.Single(collect, p => Op(p) == GameSession.AccountContentsInfoListNt)),
+            e => e.GroupId == board.SeasonGroupId);
+        Assert.Equal(todayKey, entry.Value2);
+    }
+
+    [Fact]
     public async Task Second_e34d_same_day_is_a_no_op_refresh()
     {
         var store = new FakeCharacterStore();
