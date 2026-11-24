@@ -282,7 +282,7 @@ def ncguard_host_env(runtime_dir: Path, fixture: Path) -> dict[str, str]:
         'Aion__NcGuard__FixtureFile': str(fixture.resolve()),
         'Aion__NcGuard__DataDirectory': str((runtime_dir / 'ncguard-state').resolve()),
         'Aion__NcGuard__Capture': 'false',
-        'Aion__NcGuard__RewriteHosts': 'false',
+        'Aion__NcGuard__RewriteHosts': 'true',
         'Aion__NcGuard__StopFile': str(stop_file.resolve()),
         'Aion__ServerLog__LogDirectory': str((ROOT / 'research/local/logs').resolve()),
     }
