@@ -101,7 +101,7 @@ public sealed class QaBombPlantTowerTests
         // Ready from anywhere enters the aim and must not plant or consume the bomb.
         var aim = await session.HandleAsync(GroundReady(5003), t + 550);
         Assert.Contains(aim, p => p.Length == 8 && BitConverter.ToUInt16(p, 0) == GameSession.SkillGroundReadyRs
-            && BitConverter.ToUInt16(p, 2) == 0 && BitConverter.ToInt32(p, 4) == 5003);
+            && BitConverter.ToUInt16(p, 2) == 1 && BitConverter.ToInt32(p, 4) == 5003);
         Assert.True(session.EnvObjBombTowerRemaining(tower.i, tower.o, t + 555));
         Assert.Equal(1196, session.CarriedGroup);
         Assert.Equal("out_of_range", session.BombPlantRefusalReason(t + 600, 5003));

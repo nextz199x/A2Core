@@ -334,7 +334,10 @@ partial class GameSession
                 LogBombPlantRefused(reply, skill, readyRefusal);
                 return [GroundReply(reply, GroundSkillRefused, skill)];
             }
-            return [GroundReply(reply, 0, skill)];
+            // 1 is the client's "enter the ground-aim" answer (the old code sent it after planting, which is why the
+            // ring appeared with the bomb already gone). It must not consume the bomb.
+            Note($"map_event:bomb_aim:skill={skill} carrying={CarriedGroup}");
+            return [GroundReply(reply, GroundSkillRefused, skill)];
         }
         var refusal = BombPlantRefusalReason(now, skill);
         if (refusal is not "ok")
