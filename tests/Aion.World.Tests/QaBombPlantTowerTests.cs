@@ -74,6 +74,7 @@ public sealed class QaBombPlantTowerTests
         Assert.True(used.Any(p => p.Length > 2 && p[0] == 0x35 && p[1] == 0x36
             && new PacketReader(p) { Offset = 2 }.Varint() == WorldObjects.FirstKey + tower.i), "the tower in reach is destroyed");
         Assert.Contains(used, p => p.Length > 8 && BitConverter.ToUInt16(p, 0) == 0x3802 && p.AsSpan().IndexOf(BitConverter.GetBytes(5003)) >= 0);
+        Assert.Contains(used, p => p.Length > 8 && BitConverter.ToUInt16(p, 0) == 0x3851 && p.AsSpan().IndexOf(BitConverter.GetBytes(5003)) >= 0);
         var ended = await session.TickAsync(t + 2_000);
         Assert.Contains(ended, p => p.Length > 8 && BitConverter.ToUInt16(p, 0) == 0x3806 && p.AsSpan().IndexOf(BitConverter.GetBytes(5003)) >= 0);
     }

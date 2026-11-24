@@ -108,8 +108,8 @@ public sealed class BombBoxCarryTests
                 used = await session.HandleAsync(GroundStart(5003), t + 1_100);
                 Assert.Equal((0, 5003), GroundResult(used, GameSession.SkillGroundStartRs));
                 Assert.Contains(used, p => p.Length > 1 && p[0] == 0x2c && p[1] == 0x38);   // AbnormalRemove of the bomb
-                // Only the reply (u16 result, i32 skill) and the plant's packets: no ground-skill NT, 0x382c for uid of the 0x382a add.
-                Assert.DoesNotContain(used, p => p.Length > 1 && p[0] == 0x51 && p[1] == 0x38);
+                // The reply, the throw's SkillStart, the GroundStop_NT that leaves aim, and 0x382c for uid of the 0x382a add.
+                Assert.Contains(used, p => p.Length > 1 && p[0] == 0x51 && p[1] == 0x38);
                 var added = took.Single(p => p.Length > 1 && p[0] == 0x2a && p[1] == 0x38);
                 var addReader = new PacketReader(added) { Offset = 2 };
                 addReader.Varint();

@@ -1,4 +1,4 @@
-using Aion.Protocol.Native;
+﻿using Aion.Protocol.Native;
 
 namespace Aion.World;
 
@@ -370,6 +370,9 @@ partial class GameSession
         {
             GroundReply(reply, 0, skill),
             PlayerPackets.SkillStart(playerKey, skill, throwUid, WorldObjects.FirstKey + index, throwYaw, tower.At, AttackSpeed, 0),
+            // Leave the ground-aim mode; without the NT the next bomb's Ready is ignored while the client still
+            // thinks it is aiming (live: the first throw worked, the second did not).
+            PacketWriter.Opcode(0x3851).Varint((uint)playerKey).U16(0).I32(skill).ToArray(),
         };
         replies.AddRange(BreakEnvObj(index, tower, now));
         foreach (var run in mapEventRuns.Where(r => !r.Finished))
@@ -379,3 +382,4 @@ partial class GameSession
         return await WithMapEventClearsFlushedAsync(replies, ct);
     }
 }
+
