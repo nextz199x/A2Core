@@ -28,7 +28,8 @@ public sealed class AttendanceBatchClaimTests
         Assert.Equal(0, BitConverter.ToInt32(batch[rsIndex], 2));
         var updateIndex = batch.FindIndex(p => Op(p) == GameSession.AchievementCountUpdateNt);
         Assert.True(updateIndex >= 0 && updateIndex < rsIndex, "0x5684 clears red dots before TakeAchievementRewardBatch_RS");
-        Assert.DoesNotContain(batch, p => Op(p) == GameSession.AchievementListNt);
+        var listIndex = batch.FindIndex(p => Op(p) == GameSession.AchievementListNt);
+        Assert.True(listIndex >= 0 && listIndex < rsIndex, "the attendance list refresh precedes 568a and nothing trails it");
 
         var again = await session.HandleAsync(
             new PacketWriter().U16(GameSession.TakeAchievementRewardBatchRq).U8(7).I32(GlobalAttendanceGroup).U8(1).ToArray(),

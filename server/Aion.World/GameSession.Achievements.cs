@@ -679,6 +679,9 @@ public sealed partial class GameSession
         var batch = new List<byte[]>();
         if (inventoryChanges.Count > 0) batch.AddRange(inventoryChanges);
         if (claimedAchievementIds.Count > 0) batch.Add(AchievementUpdate(claimedAchievementIds));
+        // Attendance tabs redraw their claim state from the achievement list; the count update alone left the tab's
+        // "Collect Rewards" prompt usable after today's step was taken. Before the batch reply so the reward popup stays.
+        if (claimedAchievementIds.Count > 0 && category == 7) batch.Add(AchievementList(now));
         batch.Add(RewardBatchReply(category, groupId, only, takeResults, batchResult));
         if (grantedItems)
         {

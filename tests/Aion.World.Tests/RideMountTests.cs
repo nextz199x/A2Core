@@ -40,15 +40,20 @@ public sealed class RideMountTests
         Assert.NotNull(unlock);
         var types = unlock.AsSpan(2).ToArray();
         Assert.Contains(GameSession.RideContentsUnlock, types);
+        // The client's mount key follows the 0xe258 System_ContentsUnlocked event (like chat), not only the list.
+        var update = Assert.Single(entry, p => GameSessionTestHelpers.Op(p) == 0xe258);
+        Assert.Contains(GameSession.RideContentsUnlock, update.Skip(3).ToArray());
     }
 
     [Fact]
     public async Task World_entry_sends_ride_init_with_default_ride()
     {
         var store = new FakeCharacterStore();
-        var (_, entry) = await EnterWithOwnedRideAsync(store);
+        var (session, entry) = await EnterWithOwnedRideAsync(store);
         var init = Assert.Single(entry, p => GameSessionTestHelpers.Op(p) == RidePackets.RideInit);
         Assert.Equal(PetRide, BitConverter.ToInt32(init, 2));
+        // The client's selected ride comes from the DefaultSet event, not only the RideInit field.
+        Assert.Contains(entry, p => p.AsSpan().SequenceEqual(RidePackets.DefaultSetNotice(session.PlayerKey, 0, PetRide)));
     }
 
     [Fact]

@@ -63,10 +63,18 @@ public sealed class SoulBindStatsTests
         var replies = await session.HandleAsync(new PacketWriter().U16(0x5631).I64(0x60).U16(pick & 0xFFFF).I32(0).I64(0x61).ToArray(), Now + 1);
 
         var rs = Assert.Single(replies, p => GameSessionTestHelpers.Op(p) == 0x5632);
-        Assert.Equal(0, BitConverter.ToUInt16(rs, 2));
+        var reader = new PacketReader(rs) { Offset = 2 };
+        Assert.Equal(0, reader.U16());
+        Assert.Equal(0x60, (long)reader.I64());
+        Assert.Equal((short)pick, (short)reader.U16());
+        Assert.Equal(0, reader.I32());
+        Assert.True((reader.U8() & 1) != 0);
+        var newType = (int)reader.U16();
+        Assert.NotEqual(pick, newType);   // the window must show a different option
         var stored = store.Items.Single(i => i.WireId == 0x60);
         var stats = stored.Upgrades.GetProperty("soul_stats").EnumerateArray().Select(e => (e[0].GetInt32(), e[1].GetInt32())).ToList();
-        Assert.Contains(stats, s => s.Item1 == pick);
+        Assert.Contains(stats, s => s.Item1 == newType);
+        Assert.DoesNotContain(stats, s => s.Item1 == pick);
         Assert.DoesNotContain(store.Items, i => i.WireId == 0x61);
     }
 

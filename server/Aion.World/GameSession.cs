@@ -1126,14 +1126,24 @@ public sealed partial class GameSession(GameData data, GameSessionOptions option
             || SoulBindPools.Of(row.TemplateId) is not { } binding
             || binding.Pool.FirstOrDefault(p => p[0] == selectStat) is not { } pool)
             return Fail();
-        var value = rng.Next(pool[1], pool[2] + 1);
-        var stats = SoulBindHeld(row).Where(s => s.Type != selectStat).Append((Type: (int)selectStat, Value: value))
+        // Attune replaces the selected stat with a different random pool stat (keeping the same type made the option
+        // look unchanged in the window: 5 live attunes all returned type 318 with only the value moving).
+        var held = SoulBindHeld(row);
+        var heldTypes = held.Select(s => s.Type).ToHashSet();
+        var candidates = binding.Pool.Where(p => p[3] > 0 && p[0] != selectStat && !heldTypes.Contains(p[0])).ToList();
+        if (candidates.Count == 0) candidates = binding.Pool.Where(p => p[3] > 0 && p[0] != selectStat).ToList();
+        if (candidates.Count == 0) return Fail();
+        var roll = rng.NextInt64(candidates.Sum(p => (long)p[3]));
+        var pick = candidates.First(p => (roll -= p[3]) < 0);
+        var newType = pick[0];
+        var value = rng.Next(pick[1], pick[2] + 1);
+        var stats = held.Where(s => s.Type != selectStat).Append((Type: newType, Value: value))
             .OrderBy(s => s.Type).ToList();
         var used = await Stored(async () => await store.ConsumeItemAsync(character, cost.InstanceId, cost.Revision, 1, ct) ? [Array.Empty<byte>()] : []);
         if (used.Count == 0) return Fail();
         var saved = await Stored(async () => await store.SoulBindItemAsync(character, row.InstanceId, SoulBindCount(row), ct, stats) ? [Array.Empty<byte>()] : []);
         if (saved.Count == 0) return Fail();
-        List<byte[]> replies = [GamePackets.SoulBindAttune(key, selectStat, selectSkill, true, (selectStat, value), (0, 0)),
+        List<byte[]> replies = [GamePackets.SoulBindAttune(key, selectStat, selectSkill, true, (newType, value), (0, 0)),
             .. await InventoryChangesAsync(ct)];
         if (row.Location == "equipment") replies.AddRange(RefreshStats());
         return replies;
@@ -1867,6 +1877,10 @@ public sealed partial class GameSession(GameData data, GameSessionOptions option
             replies.Add(GamePackets.MentoringRoleUpdate());
             replies.Add(GamePackets.WingList(OwnedWings()));
             replies.Add(RideInit());
+            // RideInitData's default field and the DefaultSet event are what the client's mount key reads; the event was
+            // only sent when a ride was acquired mid-session, never after a login that already owned one.
+            var initDefaultRide = defaultRide != 0 && OwnsRide(defaultRide) ? defaultRide : Rides.FirstOrDefault();
+            if (initDefaultRide != 0) replies.Add(RidePackets.DefaultSetNotice(playerKey, 0, initDefaultRide));
             replies.Add(GamePackets.GlideCooltime(playerKey));
         }
         // Respawn protection (10002) and class passives right after the own appearance (0x3633 / 0x3645).
@@ -1968,6 +1982,9 @@ public sealed partial class GameSession(GameData data, GameSessionOptions option
             if (unlockTypes.Contains(RideContentsUnlock)) rideContentsUnlocked = true;
             if (unlockTypes.Contains(DaevanionContentsUnlock)) daevanionContentsUnlocked = true;
             replies.Add(GamePackets.ContentsUnlockList(unlockTypes));
+            // The list alone did not enable the client's mount key; raise the System_ContentsUnlocked event for Ride
+            // (16) like Chat does, so the C key has a mount action (live: no 0x9001 was ever sent).
+            if (OwnsAnyRide()) replies.Add(GamePackets.ContentsUnlockUpdate([RideContentsUnlock]));
             // Rewarded quests go in too (EQuestStatus 4): acquirable list and HUD part progress both read journal status per Quest.dat Part.
             // NPC markers, Alt+1) from Quest.dat PreQuest/NextQuestName against this list. Without them it took the opening
             // HQ1100010 as never done and offered it, and never offered the next NPC-acquired story quest (HQ1101030 after HQ1101021).
@@ -1982,7 +1999,17 @@ public sealed partial class GameSession(GameData data, GameSessionOptions option
             // A teleport's map load: 0xe257 just re-locked chat (45) and the client sends no new
             // world-entry queries, so the unlock update (0xe258) follows directly (live: chat stayed
             // closed after MoveMap without it). The short load sent no 0xe257, so nothing to undo.
-            if (!shortLoad) { replies.Add(GamePackets.ContentsUnlockUpdate()); unlockUpdateSent = true; }
+            if (!shortLoad)
+            {
+                // Chat/Customizing plus Ride when a mount is owned: the 0xe257 list alone did not enable the client's
+                // mount key, while its Chat login starts from the 0xe258 System_ContentsUnlocked event. Keep 16 in the
+                // list too (some checks read the list), but raise the event as well.
+                var unlock = OwnsAnyRide()
+                    ? GamePackets.ContentsUnlockUpdate([.. GamePackets.LaterUnlockedContents, RideContentsUnlock])
+                    : GamePackets.ContentsUnlockUpdate();
+                replies.Add(unlock);
+                unlockUpdateSent = true;
+            }
             reloading = false;
             reloadStartedMs = 0;
             if (invisible) replies.Add(GamePackets.InvisibleMode(true));   // a GM stays hidden across the reload
