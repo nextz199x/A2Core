@@ -1,0 +1,89 @@
+using Aion.Protocol.Native;
+using Aion.World;
+using Xunit;
+
+namespace Aion.World.Tests;
+
+/// <summary>
+/// 0x561e DropItem_NT (OBSERVED, AVION2 captures): u8 count, 63-byte records whose first field is the source (u32, the
+/// corpse the item dropped from), then one reason byte. Drops are told apart by uid.
+/// </summary>
+public sealed class DropKeyTests
+{
+    const long Now = 1_793_368_800_000;
+    const int RecordBytes = 4 + 24 + 8 + 4 + 4 + 1 + 8 + 8 + 1 + 1;
+    static readonly GameData Data = GameSessionTestHelpers.LiveGameData;
+
+    static async Task<List<(int Target, int Source, long Uid, long Expires)>> KillForDropsAsync(SharedWorld world, int seed, long now)
+    {
+        var store = new FakeCharacterStore();
+        var session = new GameSession(Data,
+            new GameSessionOptions { World = world, CharacterLevel = 10, WorldId = store.WorldId, LevelCap = Data.MaxLevel },
+            new Random(seed)) { Store = store };
+        await session.HandleAsync(GameSessionTestHelpers.Login(), now);
+        await session.HandleAsync(GameSessionTestHelpers.LightCreate(), now);
+        await session.HandleAsync(new PacketWriter().U16(0x361f).Varint((uint)store.States[0].WireId << 16).I32(0).Vec3(Vector3d.Zero).ToArray(), now);
+        await session.HandleAsync(new PacketWriter().U16(0x3622).I32(1).ToArray(), now);
+
+        var spawn = Data.Spawns(1010).First(s => LootTables.Embedded.HasLoot(s.NpcId) && s.Relationship == 6);
+        var at = new Vector3d(spawn.Position[0], spawn.Position[1], spawn.Position[2]);
+        session.Teleport(1010, at, now);
+        await session.HandleAsync(new PacketWriter().U16(0x3622).I32(1).ToArray(), now);
+
+        var basic = MapEventScenarioHelpers.BasicAttackSkill(session);
+        var drops = new List<(int, int, long, long)>();
+        var castAt = now + 1000;
+        var target = session.Targets!.Values.First(t => t.NpcId == spawn.NpcId);
+        target.Hp = 1;
+        foreach (var p in await MapEventScenarioHelpers.CombatCastAsync(session, basic, target.Key, at, castAt))
+            if (GameSessionTestHelpers.Op(p) == LootPackets.DropNt)
+            {
+                var reader = new PacketReader(p) { Offset = 2 };
+                var count = reader.U8();
+                Assert.Equal(2 + 1 + count * RecordBytes + 1, p.Length);
+                for (var i = 0; i < count; i++)
+                {
+                    var source = (int)reader.U32();
+                    reader.Offset += 24;
+                    var uid = reader.I64();
+                    reader.Offset += 4 + 4 + 1 + 8;   // item, count, owner type, owner
+                    var expires = reader.I64();
+                    drops.Add((target.Key, source, uid, expires));
+                    reader.Offset += RecordBytes - 4 - 24 - 8 - 4 - 4 - 1 - 8 - 8;
+                }
+            }
+        return drops;
+    }
+
+    [Fact]
+    public async Task Drops_name_their_corpse_and_keep_unique_uids_across_players()
+    {
+        var world = new SharedWorld(GameSessionTestHelpers.LiveGameData);
+        var first = await KillForDropsAsync(world, 1, Now);
+        var second = await KillForDropsAsync(world, 2, Now);
+        Assert.NotEmpty(first);
+        Assert.NotEmpty(second);
+        var all = first.Concat(second).ToList();
+        Assert.All(all, d => Assert.Equal(d.Target, d.Source));
+        Assert.Equal(all.Count, all.Select(d => d.Uid).Distinct().Count());
+        // Official ownership expiry: 120 s (capture 20261124-130131 #3188: exp - packet time 120047 ms).
+        Assert.All(all, d => Assert.InRange(d.Expires - Now, 110_000, 122_000));
+    }
+
+    [Fact]
+    public void Removal_batch_has_twenty_byte_records_and_one_trailing_byte()
+    {
+        var p = LootPackets.DropsRemoved([(7, 11, 99, true), (7, 12, 99, true)]);
+        Assert.Equal(2 + 1 + 2 * 20 + 1, p.Length);
+        var reader = new PacketReader(p) { Offset = 2 };
+        Assert.Equal(2, reader.U8());
+        Assert.Equal(7u, reader.U32());
+        Assert.Equal(11, reader.I64());
+        Assert.Equal(99, reader.I64());
+        Assert.Equal(7u, reader.U32());
+        Assert.Equal(12, reader.I64());
+        Assert.Equal(99, reader.I64());
+        Assert.Equal(1, reader.U8());
+        Assert.True(reader.End);
+    }
+}
