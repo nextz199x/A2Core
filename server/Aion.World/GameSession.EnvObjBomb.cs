@@ -34,6 +34,9 @@ partial class GameSession
     public const ushort SkillGroundReadyRq = 0x384a, SkillGroundReadyRs = 0x384b, SkillGroundStartRq = 0x384d, SkillGroundStartRs = 0x384e,
         SkillGroundStopRq = 0x384f, SkillGroundStopRs = 0x3850;
 
+    /// <summary>Bomb throw animation length before the natural SkillEnd_NT (OURS; no capture).</summary>
+    const int BombThrowMs = 700;
+
     /// <summary>Max horizontal distance to plant on a tower: EnvObj InteractRange + <see cref="WorldObjects.InteractSlack"/> (matches InteractEnvObj_RQ).</summary>
     public static double BombPlantReach(WorldObject tower) => tower.InteractRange + WorldObjects.InteractSlack;
 
@@ -359,7 +362,15 @@ partial class GameSession
         Note($"map_event:bomb_plant:env={tower.Env} idx={index} skill={skill} map={worldMap} at=({at.X:F0},{at.Y:F0},{at.Z:F0})");
         PlaytestDebug.Action("bomb_plant", ("env", tower.Env), ("index", index), ("skill", skill), ("map", worldMap));
         RecordQaBombTowerCredit(tower, at, now);
-        var replies = new List<byte[]> { GroundReply(reply, 0, skill) };
+        // The client draws the throw from a normal 0x3802 for the bomb skill (the GroundStart_RS alone has no animation).
+        var throwUid = (byte)(actionUid = actionUid % 255 + 1);
+        var throwYaw = Math.Atan2(tower.At.Y - at.Y, tower.At.X - at.X) * 180 / Math.PI;
+        pendingSkillEnds.Add((skill, throwUid, now + BombThrowMs));
+        var replies = new List<byte[]>
+        {
+            GroundReply(reply, 0, skill),
+            PlayerPackets.SkillStart(playerKey, skill, throwUid, WorldObjects.FirstKey + index, throwYaw, tower.At, AttackSpeed, 0),
+        };
         replies.AddRange(BreakEnvObj(index, tower, now));
         foreach (var run in mapEventRuns.Where(r => !r.Finished))
             BumpBombTowerProgress(run, CountSpentBombTowers(now), BombTowerCreditsFromRun(run));
