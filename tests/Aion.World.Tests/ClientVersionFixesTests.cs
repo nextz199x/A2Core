@@ -1,0 +1,105 @@
+using Aion.Protocol.Native;
+using Aion.World;
+using Xunit;
+
+namespace Aion.World.Tests;
+
+/// <summary>2.0.12 field fixes verified against the client wire specs (see docs/TODO_TASK.md).</summary>
+public sealed class ClientVersionFixesTests
+{
+    static ushort Op(byte[] packet) => BitConverter.ToUInt16(packet, 0);
+
+    [Fact]
+    public void Character_created_result_is_u16_before_the_lobby_desc()
+    {
+        var packet = GamePackets.CharacterCreated("Name", 1, 2, 1, 0x1234, 0x5678, [1, 2, 3], 4, 5, 1000);
+        Assert.Equal(0x361C, Op(packet));
+        Assert.Equal(0, BitConverter.ToUInt16(packet, 2));
+        Assert.Equal(0x1234, BitConverter.ToInt32(packet, 4));   // Common_LobbyCharDesc._key
+    }
+
+    [Fact]
+    public void Lobby_customizing_list_uses_the_2_0_12_opcode_and_u16_result()
+    {
+        var packet = GamePackets.CharCustomizingList(0, [(1, [9, 8], 2, 3)]);
+        Assert.Equal(0x569E, Op(packet));
+        Assert.Equal(0, BitConverter.ToUInt16(packet, 2));
+        Assert.Equal(1, packet[4]);          // varint count
+        Assert.Equal(1, packet[5]);          // slot
+        Assert.Equal(2, packet[6]);          // customizing blob length
+        Assert.Equal(9, packet[7]);
+        Assert.Equal(2, packet[9]);          // voice
+    }
+
+    [Fact]
+    public void Broadcast_customizing_uses_the_2_0_12_opcode_and_varint_key()
+    {
+        var packet = GamePackets.BroadcastCharCustomizingUpdate(0x1234, [1], 2, 3);
+        Assert.Equal(0x56AB, Op(packet));
+        Assert.Equal(0xB4, packet[2]);       // 0x1234 LEB128 low byte
+        Assert.Equal(0x24, packet[3]);       // high byte
+    }
+
+    [Fact]
+    public void Extended_character_slot_is_0x910a() =>
+        Assert.Equal(0x910A, Op(GamePackets.ExtendedCharacterSlot(2)));
+
+    [Fact]
+    public void Party_leave_notice_is_0x931f() =>
+        Assert.Equal(0x931F, SocialOpcodes.PartyLeaveNt);
+
+    [Fact]
+    public void Respawn_request_reads_the_2_0_12_has_item_and_type()
+    {
+        var uid = 2199023958545L;
+        var withItem = new byte[12];
+        withItem[0] = 0x22; withItem[1] = 0x8D;
+        withItem[2] = 1; withItem[3] = 3;   // has_item, ERespawnType.Item
+        BitConverter.GetBytes(uid).CopyTo(withItem, 4);
+        Assert.Equal(((byte)3, uid), GameSession.ParseRespawnRequest(withItem));
+
+        var auto = new byte[] { 0x22, 0x8D, 0, 2 };
+        Assert.Equal(((byte)2, 0L), GameSession.ParseRespawnRequest(auto));
+
+        var legacy = new byte[11];
+        legacy[0] = 0x22; legacy[1] = 0x8D; legacy[2] = 3;
+        BitConverter.GetBytes(uid).CopyTo(legacy, 3);
+        Assert.Equal(((byte)3, uid), GameSession.ParseRespawnRequest(legacy));
+    }
+
+    [Fact]
+    public void Quest_accept_reads_the_flag_quest_and_optional_npc()
+    {
+        var withNpc = new byte[11];
+        withNpc[0] = 0x0A; withNpc[1] = 0x8D;
+        withNpc[2] = 1;                                   // npc present
+        BitConverter.GetBytes(1100010).CopyTo(withNpc, 3);
+        BitConverter.GetBytes(880301).CopyTo(withNpc, 7);
+        Assert.Equal((1100010, 880301), GameSession.ParseQuestAcceptRequest(withNpc));
+
+        var withoutNpc = new byte[7];
+        withoutNpc[0] = 0x0A; withoutNpc[1] = 0x8D;
+        BitConverter.GetBytes(1100010).CopyTo(withoutNpc, 3);
+        Assert.Equal((1100010, 0), GameSession.ParseQuestAcceptRequest(withoutNpc));
+
+        var legacy = new byte[10];
+        legacy[0] = 0x0A; legacy[1] = 0x8D;
+        BitConverter.GetBytes(1100010).CopyTo(legacy, 2);
+        BitConverter.GetBytes(880301).CopyTo(legacy, 6);
+        Assert.Equal((1100010, 880301), GameSession.ParseQuestAcceptRequest(legacy));
+    }
+
+    [Fact]
+    public void Warp_leave_has_the_2_0_12_flag_byte_and_trailing_duration()
+    {
+        var at = new Vector3d(1, 2, 3);
+        var packet = PlayerPackets.WarpLeave(5, at, 90, 0, 0, 1, effectId: 7);
+        Assert.Equal(0x373C, Op(packet));
+        Assert.Equal(5, packet[2]);          // key varint
+        Assert.Equal(2, packet[3]);          // flags: effect present
+        Assert.Equal(1f, BitConverter.ToSingle(packet, 4));   // position
+        Assert.Equal(28, packet.Length);
+        var durationAt = packet.Length - 1;
+        Assert.Equal(0, packet[durationAt]); // duration varint
+    }
+}
