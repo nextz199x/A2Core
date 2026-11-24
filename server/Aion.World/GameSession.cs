@@ -255,11 +255,12 @@ public sealed partial class GameSession(GameData data, GameSessionOptions option
     /// A standing dodge (no sprint) on 6-10 keeps variant 0: that is the reply this client already finishes.
     /// </summary>
     /// <summary>
-    /// Default 7: hold the sprint reply and send it in the same write as the dash — the official 2026-11-24 batch
-    /// (0x8d03, 0x3741, 0x3802, 0x3801, 0x382a, 0x8d00 at one timestamp). Variant 0 answered the sprint first and
-    /// the client turned it off 16 ms later with 0x3705 on every sprint, so the player only got the dash.
+    /// Default 0: variant 7 matched the official 2026-11-24 batch byte for byte, but this client then stayed in the
+    /// dash (no 0x3701/0x3700 after the 0x3806 end, live 2026-11-24 20:10), so movement froze. Variant 0 lets the
+    /// client finish the dash itself; it drops the sprint (0x3705 16 ms later), which is the playable trade-off
+    /// until the dash abnormal/end is understood. Switch live with //DashVariant.
     /// </summary>
-    public int DashVariant { get; set; } = 7;
+    public int DashVariant { get; set; } = 0;
     public const int DashVariantMax = 10, DodgeLateEndMs = 600, DashBatchDelayMs = 50, SprintReplyHoldMs = 80;
     /// <summary>CombatDodge right after 0x3704 skips MinCastGap and dodge cooldown (official sprint-opening dash).</summary>
     public const int SprintAutoDodgeWindowMs = 250;
@@ -577,6 +578,13 @@ public sealed partial class GameSession(GameData data, GameSessionOptions option
             case RidePackets.DefaultSetRq when plain.Length == 6: return await SetDefaultRideAsync(BitConverter.ToInt32(plain, 2), ct);
             case 0x562f when plain.Length == 10 && inventory.ContainsKey(BitConverter.ToInt64(plain, 2)):
                 return await SoulBindCompleteAsync(BitConverter.ToInt64(plain, 2), ct);
+            // Soul-bind attune (0x5631, 24 bytes: uid i64, select stat i16, select skill i32, cost uid i64). The live
+            // client sent it unanswered (2026-11-24 19:36) and the soul-bind window hung on the sync.
+            case 0x5631 when plain.Length == 24:
+                return await SoulBindAttuneAsync(BitConverter.ToInt64(plain, 2), BitConverter.ToInt16(plain, 10),
+                    BitConverter.ToInt32(plain, 12), BitConverter.ToInt64(plain, 16), ct);
+            case ItemStoreRq when plain.Length >= 9: return await StoreItemsAsync(plain, takeOut: false, ct);
+            case ItemTakeOutRq when plain.Length >= 9: return await StoreItemsAsync(plain, takeOut: true, ct);
             case 0x3704 when plain.Length == 10: return SprintOn(now);
             // Glide (0x3706) and flight (0x370a) starts, sent once a wing is equipped (live 2026-10-15).
             case 0x3706 when resources is not null && wingId != 0:
@@ -901,9 +909,17 @@ public sealed partial class GameSession(GameData data, GameSessionOptions option
         var replies = new List<byte[]>();
         var buff = AddBuff(DodgeAbnormal, DodgeAbnormalMs, skill, now, replies, path: SelfAbnormalPath.Dodge);
         dodgeAbnormalOff = (buff?.Uid ?? 0, skill, action, endAt, end);
-        return replies.Count > 0 ? replies[0]
-            : PlayerPackets.AbnormalAdd(playerKey, [new AbnormalWire(++buffUid, DodgeAbnormal, DodgeAbnormalMs, now + DodgeAbnormalMs,
+        if (buff is null)
+            return PlayerPackets.AbnormalAdd(playerKey, [new AbnormalWire(++buffUid, DodgeAbnormal, DodgeAbnormalMs, now + DodgeAbnormalMs,
                 CasterKey: playerKey, Level: 1, RangeBase: position ?? Vector3d.Zero)]);
+        // The official dodge abnormal has mask 0x11: caster + range_base, no _skill_id (capture 20261124-130131 #1420).
+        // The skill id tied the abnormal to the dash in the client, which kept the player in the dash after the 0x3806 end.
+        buff.SkillId = 0;
+        buff.RangeBase = position;
+        var wire = PlayerPackets.AbnormalAdd(playerKey, [Wire(buff)]);
+        replies[0] = wire;
+        worldPlayer?.Map?.Broadcast(worldPlayer, [wire]);
+        return wire;
     }
 
     /// <summary>
@@ -1029,21 +1045,22 @@ public sealed partial class GameSession(GameData data, GameSessionOptions option
         IReadOnlyDictionary<long, InventoryItem>? shown = null, IReadOnlyDictionary<long, int>? hints = null)
     {
         var result = new List<InventoryItem>();
-        // Free slots are laid out per container: the bag (1) and the warehouse (2, location 'storage').
-        var used = new Dictionary<string, HashSet<int>> { ["bag"] = [], ["storage"] = [] };
-        foreach (var i in items.Where(i => i.Location is "bag" or "storage" && i.Slot is not null)) used[i.Location].Add(i.Slot!.Value);
+        // Free slots are laid out per container: the bag, the character warehouse (location 'storage') and the
+        // server/account warehouse ('account_storage').
+        var used = new Dictionary<string, HashSet<int>> { ["bag"] = [], ["storage"] = [], ["account_storage"] = [] };
+        foreach (var i in items.Where(i => i.Location is "bag" or "storage" or "account_storage" && i.Slot is not null)) used[i.Location].Add(i.Slot!.Value);
         var kept = new Dictionary<long, int>();
-        foreach (var i in items.Where(i => i.Location is "bag" or "storage" && i.Slot is null))
+        foreach (var i in items.Where(i => i.Location is "bag" or "storage" or "account_storage" && i.Slot is null))
         {
-            var container = i.Location == "storage" ? InventoryItem.Storage : InventoryItem.Bag;
+            var container = ContainerOf(i.Location);
             if (shown?.GetValueOrDefault(WireKey(i)) is { } was && was.Container == container && used[i.Location].Add(was.Slot))
                 kept[WireKey(i)] = was.Slot;
         }
-        foreach (var i in items.Where(i => i.Location is "bag" or "storage" && i.Slot is null && !kept.ContainsKey(WireKey(i))))
+        foreach (var i in items.Where(i => i.Location is "bag" or "storage" or "account_storage" && i.Slot is null && !kept.ContainsKey(WireKey(i))))
             if (hints?.GetValueOrDefault(WireKey(i), -1) is >= 0 and var hint && used[i.Location].Add(hint))
                 kept[WireKey(i)] = hint;
-        var next = new Dictionary<string, int> { ["bag"] = 0, ["storage"] = 0 };
-        foreach (var item in items.Where(i => i.Location is "bag" or "equipment" or "storage")
+        var next = new Dictionary<string, int> { ["bag"] = 0, ["storage"] = 0, ["account_storage"] = 0 };
+        foreach (var item in items.Where(i => i.Location is "bag" or "equipment" or "storage" or "account_storage")
                      .OrderBy(i => i.Location == "equipment" ? 0 : 1).ThenBy(i => i.Slot ?? int.MaxValue).ThenBy(i => i.WireId))
         {
             var equipped = item.Location == "equipment";
@@ -1058,7 +1075,7 @@ public sealed partial class GameSession(GameData data, GameSessionOptions option
             }
             var key = item.WireId > 0 ? item.WireId : BitConverter.ToInt64(item.InstanceId.ToByteArray(), 0) & long.MaxValue;
             var equipment = equipped || data?.Item(item.TemplateId) is not null;
-            var container = equipped ? InventoryItem.Equipped : item.Location == "storage" ? InventoryItem.Storage : InventoryItem.Bag;
+            var container = equipped ? InventoryItem.Equipped : ContainerOf(item.Location);
             result.Add(new InventoryItem(key, item.TemplateId, item.Quantity, container, slot,
                 // Item level: its own, the enchant's and the manastone grades' (OBSERVED 2026-11-06 234912: 23 + grades; GameSession.Imprint.cs).
                 equipment ? new EquipDetail((data?.ItemLevel(item.TemplateId) ?? 1) + Enchants.Effect(item.TemplateId, EnchantOf(item)).ItemLevel
@@ -1093,6 +1110,32 @@ public sealed partial class GameSession(GameData data, GameSessionOptions option
             .. Emit(new AchievementEvent("SoulbindTry")),
             .. Emit(new AchievementEvent("SoulbindMax", SetValue: count))];
         if (row.Location == "equipment" && stats is { Count: > 0 }) replies.AddRange(RefreshStats());
+        return replies;
+    }
+
+    /// <summary>
+    /// 0x5631 ItemSoulBindAttune_RQ: the bound item takes the selected stat from its soul-bind pool (the cost item
+    /// is used up), answered 0x5632. A stat outside the item's pool, an unbound item or a missing cost is result 1.
+    /// </summary>
+    async Task<List<byte[]>> SoulBindAttuneAsync(long key, short selectStat, int selectSkill, long costUid, CancellationToken ct)
+    {
+        List<byte[]> Fail() => [GamePackets.SoulBindAttune(key, selectStat, selectSkill, false, (0, 0), (0, 0), 1)];
+        if (Store is not { } store || CharacterId is not { } character || !storedItems.TryGetValue(key, out var row)
+            || SoulBindCount(row) == 0 || !storedItems.TryGetValue(costUid, out var cost)
+            || cost.InstanceId == row.InstanceId || cost.Location != "bag" || cost.Quantity < 1
+            || SoulBindPools.Of(row.TemplateId) is not { } binding
+            || binding.Pool.FirstOrDefault(p => p[0] == selectStat) is not { } pool)
+            return Fail();
+        var value = rng.Next(pool[1], pool[2] + 1);
+        var stats = SoulBindHeld(row).Where(s => s.Type != selectStat).Append((Type: (int)selectStat, Value: value))
+            .OrderBy(s => s.Type).ToList();
+        var used = await Stored(async () => await store.ConsumeItemAsync(character, cost.InstanceId, cost.Revision, 1, ct) ? [Array.Empty<byte>()] : []);
+        if (used.Count == 0) return Fail();
+        var saved = await Stored(async () => await store.SoulBindItemAsync(character, row.InstanceId, SoulBindCount(row), ct, stats) ? [Array.Empty<byte>()] : []);
+        if (saved.Count == 0) return Fail();
+        List<byte[]> replies = [GamePackets.SoulBindAttune(key, selectStat, selectSkill, true, (selectStat, value), (0, 0)),
+            .. await InventoryChangesAsync(ct)];
+        if (row.Location == "equipment") replies.AddRange(RefreshStats());
         return replies;
     }
 

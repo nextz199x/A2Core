@@ -390,8 +390,19 @@ public sealed class FakeCharacterStore : INativeCharacterStore
         return Task.FromResult(true);
     }
 
-    public Task<bool> SoulBindItemAsync(Guid character, Guid item, byte count, CancellationToken ct, IReadOnlyList<(int Type, int Value)>? stats = null) =>
-        Task.FromResult(false);
+    public Task<bool> SoulBindItemAsync(Guid character, Guid item, byte count, CancellationToken ct, IReadOnlyList<(int Type, int Value)>? stats = null)
+    {
+        var index = Items.FindIndex(i => i.InstanceId == item);
+        if (index < 0) return Task.FromResult(false);
+        var row = Items[index];
+        var dict = row.Upgrades.ValueKind == JsonValueKind.Object
+            ? JsonSerializer.Deserialize<Dictionary<string, JsonElement>>(row.Upgrades.GetRawText()) ?? []
+            : [];
+        dict["soul_bind"] = JsonSerializer.SerializeToElement(count);
+        if (stats is not null) dict["soul_stats"] = JsonSerializer.SerializeToElement(stats.Select(s => new[] { s.Type, s.Value }));
+        Items[index] = row with { Upgrades = JsonSerializer.SerializeToElement(dict), Revision = row.Revision + 1 };
+        return Task.FromResult(true);
+    }
 
     readonly InMemorySocialGraph socialGraph = new();
     CharacterState? StateByName(string name) =>

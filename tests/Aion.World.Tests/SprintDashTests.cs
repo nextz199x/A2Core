@@ -22,7 +22,7 @@ public sealed class SprintDashTests
     {
         var store = new FakeCharacterStore { Progress = (10, 0) };
         var session = await GameSessionTestHelpers.EnterWorldAsync(store, Now, level: 10);
-        Assert.Equal(7, session.DashVariant);
+        session.DashVariant = 7;
         var spBefore = session.Resource!.Sp;
         var on = await session.HandleAsync(SprintOn(), Now);
         Assert.Empty(on);   // held for the dash's write, as the official server answered
@@ -37,7 +37,7 @@ public sealed class SprintDashTests
     {
         var store = new FakeCharacterStore { Progress = (10, 0) };
         var session = await GameSessionTestHelpers.EnterWorldAsync(store, Now, level: 10);
-        session.DashVariant = 0;
+        Assert.Equal(0, session.DashVariant);
         var on = await session.HandleAsync(SprintOn(), Now);
         Assert.Equal([0x8d03, 0x3741], Opcodes(on));
         var dash = await session.HandleAsync(DodgeCast(), Now + 4);
@@ -53,8 +53,7 @@ public sealed class SprintDashTests
         var spBefore = session.Resource!.Sp;
         await session.HandleAsync(SprintOn(), Now);
         var dash = await session.HandleAsync(DodgeCast(), Now + 4);
-        Assert.Equal([0x8d03, 0x3741, 0x3801], Opcodes(dash));
-        Assert.Equal(GamePackets.DodgeResult(GameSession.CombatDodge, 1), dash[^1]);
+        Assert.Equal(GamePackets.DodgeResult(GameSession.CombatDodge, 1), dash.Single());
         Assert.Equal(spBefore, session.Resource.Sp);
     }
 
