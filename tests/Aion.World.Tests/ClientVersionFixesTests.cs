@@ -201,6 +201,20 @@ public sealed class ClientVersionFixesTests
     }
 
     [Fact]
+    public void Other_character_appearance_sets_the_ride_and_vessel_mask_bits()
+    {
+        var packet = PlayerPackets.CharAppear(new OtherCharacter
+        {
+            Key = 1, Name = "Rider", RideDataId = 11, VesselKey = 22, DefaultRideDataId = 33,
+        });
+        Assert.Equal(0x3645, Op(packet));
+        var mask = BitConverter.ToUInt32(packet, 3);   // opcode 2 + key varint (1)
+        Assert.True((mask & 0x8000) != 0, "ride data gate");
+        Assert.True((mask & 0x10000) != 0, "vessel gate");
+        Assert.True((mask & 0x800000) != 0, "default ride gate");
+    }
+
+    [Fact]
     public void Party_dungeon_room_family_uses_the_2_0_12_opcodes()
     {
         Assert.Equal(0x9323, GameSession.PartyDungeonEnterRq);
