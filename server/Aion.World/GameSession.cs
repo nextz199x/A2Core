@@ -251,7 +251,7 @@ public sealed partial class GameSession(GameData data, GameSessionOptions option
     /// same write as the recorded dash (official: one batch). 8 is 7, held until <see cref="DashBatchDelayMs"/> after the sprint
     /// request (official answers 45-85 ms later, one tick). 9 is 7 but starts CombatDodge instead of NormalDodge.
     /// Variants 1-5 sent the sprint reply on its own, a frame before the dash, and the client never left the dash.
-    /// 10 is legacy (refused the dash with 9-byte 0x3801 result 1 and froze live 2026-11-01); sprint dashes use variant 0.
+    /// 10 is legacy (refused the dash with 9-byte 0x3801 result 1 and froze live 2026-11-01); default is variant 7.
     /// A standing dodge (no sprint) on 6-10 keeps variant 0: that is the reply this client already finishes.
     /// </summary>
     /// <summary>
@@ -266,6 +266,8 @@ public sealed partial class GameSession(GameData data, GameSessionOptions option
     public const int SprintAutoDodgeWindowMs = 250;
     /// <summary>Sprint-on reply (and, for variant 8, the dash) waiting to share one write. Official sends them at one timestamp.</summary>
     List<byte[]>? pendingSprintReply, pendingDashBatch;
+    /// <summary>Whether 0x3704 is intentionally deferred until its client auto-dodge (0x3800) arrives.</summary>
+    public bool HasPendingSprintReply => pendingSprintReply is not null;
     long sprintOnAt;
     /// <summary>The standing dodge's pending effect: the start's action uid and when it is due.</summary>
     (int Action, long At)? dodgeEffectAt;

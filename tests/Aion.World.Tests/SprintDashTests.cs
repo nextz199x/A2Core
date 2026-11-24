@@ -26,8 +26,10 @@ public sealed class SprintDashTests
         var spBefore = session.Resource!.Sp;
         var on = await session.HandleAsync(SprintOn(), Now);
         Assert.Empty(on);   // held for the dash's write, as the official server answered
+        Assert.True(session.HasPendingSprintReply); // 0x3704 is deferred, not unanswered
         var dash = await session.HandleAsync(DodgeCast(), Now + 4);
         Assert.Equal([0x8d03, 0x3741, 0x3802, 0x3801, 0x382a, 0x8d00], Opcodes(dash));
+        Assert.False(session.HasPendingSprintReply);
         Assert.Equal(GameSession.NormalDodge, BitConverter.ToInt32(dash[2], 4));
         Assert.Equal(spBefore - GameSession.NormalDodgeSp, session.Resource.Sp);
     }
