@@ -34,7 +34,7 @@ def test_served_catalog_covers_on_sale_tabs_and_hides_quna_topup():
     ids = {int(g["goods_id"]) for g in data["goods"]}
     assert stats["missing_on_sale"] == []
     assert data["revision_id"].endswith("-served")
-    assert len(data["goods"]) >= 200
+    assert len(data["goods"]) >= 190
     assert len(data["me_goods"]) == 18
     # Membership is Quna at the platform price.
     membership = next(g for g in data["goods"] if g["goods_id"] == "100024")
@@ -84,14 +84,11 @@ def test_served_catalog_covers_on_sale_tabs_and_hides_quna_topup():
         assert not row.get("pgs")
 
 
-def test_client_rows_do_not_repeat_an_item_price_and_tab():
-    """The official capture keeps its own rows; a BMShopGoods row must not add a second copy of any of them."""
+def test_served_goods_do_not_repeat_an_item_price_and_tab():
+    """No two products show the same items at the same price in the same tabs (the _p_/_s_ pairs are folded)."""
     data = json.loads((ROOT / "tools/data/official_shop.served.json").read_text(encoding="utf-8"))
-    official = {g["goods_id"] for g in json.loads((ROOT / "tools/data/official_shop.json").read_text(encoding="utf-8"))["goods"]}
-    seen = {served.served_signature(g): g["goods_id"] for g in data["goods"] if g["goods_id"] in official}
+    seen: dict[tuple, str] = {}
     for g in data["goods"]:
-        if g["goods_id"] in official:
-            continue
         sig = served.served_signature(g)
         assert sig not in seen, (seen.get(sig), g["goods_id"], sig)
         seen[sig] = g["goods_id"]

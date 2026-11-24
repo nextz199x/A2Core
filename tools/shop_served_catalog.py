@@ -517,6 +517,13 @@ def build():
         if apply_quota(row, plat_prices, blocked_groups):
             quotas.append(row)
 
+    # The official capture lists the same product twice as _p_ (personal) and _s_ (server) variants with identical
+    # items, price, tabs and window (e.g. 100110/100111). They look like duplicates in the shop; keep the first one.
+    folded = {}
+    for row in served:
+        folded.setdefault(served_signature(row), row)
+    served = list(folded.values())
+
     on_sale_ids = {int(g["goods_id"]) for g in bm_on}
     missing_on_sale = sorted(on_sale_ids - seen - hidden_ids)
     revision = f"{official.get('revision_id', '8484')}-served"
