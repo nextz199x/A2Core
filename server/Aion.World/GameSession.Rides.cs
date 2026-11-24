@@ -146,7 +146,10 @@ public sealed partial class GameSession
         return
         [
             .. InterruptItemCast(),
-            RidePackets.GetOnReply(playerKey, RidePackets.OnSuccess, ride, moveState, moveSubstate, isSprinting: sprinting && moving),
+            // Official 2.0.12 CharGetOnRide_RS leaves all three movement fields zero (#831). The move state belongs
+            // on the broadcast notice; echoing Run/Sprint fields in the action reply can leave the client transfer
+            // state out of sync when it dismounts during a dash.
+            RidePackets.GetOnReply(playerKey, RidePackets.OnSuccess, ride),
             .. RefreshStats(),
         ];
     }

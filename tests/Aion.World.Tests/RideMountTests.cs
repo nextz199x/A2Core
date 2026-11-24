@@ -109,8 +109,9 @@ public sealed class RideMountTests
         Assert.Equal(session.PlayerKey, (int)reader.Varint());
         Assert.Equal(RidePackets.OnSuccess, reader.U16());
         Assert.Equal(PetRide, reader.I32());
-        Assert.Equal(RidePackets.MoveModelRun, reader.U8());
+        Assert.Equal(RidePackets.MoveModelStop, reader.U8());
         Assert.Equal(RidePackets.MoveTypeStop, reader.U8());
+        Assert.Equal(0, reader.U8()); // official CharGetOnRide_RS #831 has a zero movement tail
         Assert.Equal(PetRide, session.MountedRide);
         Assert.DoesNotContain(mounted, p => GameSessionTestHelpers.Op(p) == RidePackets.GetOnNt);   // the NT is for others
         Assert.DoesNotContain(mounted, p => GameSessionTestHelpers.Op(p) == 0x3633);
@@ -129,6 +130,32 @@ public sealed class RideMountTests
         Assert.DoesNotContain(again, p => GameSessionTestHelpers.Op(p) == RidePackets.GetOffRs);
         Assert.Contains(again, p => GameSessionTestHelpers.Op(p) == RidePackets.GetOnRs);
         Assert.DoesNotContain(again, p => GameSessionTestHelpers.Op(p) == 0x3633);
+    }
+
+    [Fact]
+    public async Task Mount_dismount_and_mount_again_returns_official_action_results()
+    {
+        var store = new FakeCharacterStore();
+        var (session, _) = await EnterWithOwnedRideAsync(store);
+
+        var firstOn = await session.HandleAsync(new PacketWriter().U16(RidePackets.GetOnRq).I32(PetRide).ToArray(), Now + 2);
+        var firstOnReader = new PacketReader(Assert.Single(firstOn, p => GameSessionTestHelpers.Op(p) == RidePackets.GetOnRs)) { Offset = 2 };
+        _ = firstOnReader.Varint();
+        Assert.Equal(RidePackets.OnSuccess, firstOnReader.U16());
+
+        var off = await session.HandleAsync(new PacketWriter().U16(RidePackets.GetOffRq).Bool(false).ToArray(), Now + 3);
+        var offReply = Assert.Single(off, p => GameSessionTestHelpers.Op(p) == RidePackets.GetOffRs);
+        var offReader = new PacketReader(offReply) { Offset = 2 };
+        _ = offReader.Varint();
+        Assert.Equal(RidePackets.OffSuccess, offReader.U16());
+        Assert.Equal((byte)RidePackets.ByClient, offReader.U8());
+        Assert.Null(session.MountedRide);
+
+        var secondOn = await session.HandleAsync(new PacketWriter().U16(RidePackets.GetOnRq).I32(PetRide).ToArray(), Now + 4);
+        var secondOnReader = new PacketReader(Assert.Single(secondOn, p => GameSessionTestHelpers.Op(p) == RidePackets.GetOnRs)) { Offset = 2 };
+        _ = secondOnReader.Varint();
+        Assert.Equal(RidePackets.OnSuccess, secondOnReader.U16());
+        Assert.Equal(PetRide, session.MountedRide);
     }
 
     [Fact]

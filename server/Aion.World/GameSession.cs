@@ -255,12 +255,12 @@ public sealed partial class GameSession(GameData data, GameSessionOptions option
     /// A standing dodge (no sprint) on 6-10 keeps variant 0: that is the reply this client already finishes.
     /// </summary>
     /// <summary>
-    /// Default 0: variant 7 matched the official 2026-11-24 batch byte for byte, but this client then stayed in the
-    /// dash (no 0x3701/0x3700 after the 0x3806 end, live 2026-11-24 20:10), so movement froze. Variant 0 lets the
-    /// client finish the dash itself; it drops the sprint (0x3705 16 ms later), which is the playable trade-off
-    /// until the dash abnormal/end is understood. Switch live with //DashVariant.
+    /// Default 7 batches the sprint acknowledgement with its dash, matching the official capture. The earlier
+    /// variant-7 freeze was traced to a malformed dodge abnormal (_skill_id was present; official mask is 0x11),
+    /// now corrected. Variant 0 is available via //DashVariant as a fallback; in this client it immediately sends
+    /// 0x3705 after the dash and never sustains the sprint.
     /// </summary>
-    public int DashVariant { get; set; } = 0;
+    public int DashVariant { get; set; } = 7;
     public const int DashVariantMax = 10, DodgeLateEndMs = 600, DashBatchDelayMs = 50, SprintReplyHoldMs = 80;
     /// <summary>CombatDodge right after 0x3704 skips MinCastGap and dodge cooldown (official sprint-opening dash).</summary>
     public const int SprintAutoDodgeWindowMs = 250;
