@@ -195,5 +195,22 @@ public sealed class ClientVersionFixesTests
         Assert.Equal(0xE332, GameSession.CloseEnvObjAchievementRs);
         Assert.Equal(0x3845, GameSession.SkillCustomizingUpdateRq);   // CANDIDATE: RS is 0x3846
         Assert.Equal(0x3846, GameSession.SkillCustomizingUpdateRs);
+        Assert.Equal(0xE500, GameSession.DaevanionOpenAllNodeRq);
+        Assert.Equal(0xE501, GameSession.DaevanionOpenAllNodeRs);
+    }
+
+    [Fact]
+    public void Party_dungeon_room_family_uses_the_2_0_12_opcodes()
+    {
+        Assert.Equal(0x9323, GameSession.PartyDungeonEnterRq);
+        Assert.Equal(0x9330, GameSession.BookmarkedContentListNt);
+        Assert.Equal(0x9700, GameSession.DungeonRoomListRq);
+        Assert.Equal(0x9703, GameSession.DungeonRoomCreateRq);
+        Assert.Equal(0x9708, GameSession.DungeonRoomApplyResponseRq);
+        Assert.Equal(0x9714, GameSession.DungeonRoomReadyRq);
+        Assert.Equal(0x9717, GameSession.DungeonRoomStartRq);
+        Assert.Equal(0x9720, GameSession.DungeonRoomEditSettingRq);
+        Assert.Equal(0x9734, GameSession.DungeonRoomRetryFailNt);
+        Assert.Equal(0x9333, GameSession.PartyDungeonClearNt);
     }
 }
