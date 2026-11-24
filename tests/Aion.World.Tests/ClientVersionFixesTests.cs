@@ -183,6 +183,7 @@ public sealed class ClientVersionFixesTests
         Assert.Equal(0xFFAB, GameSession.AbyssPointUpdateNt);
         Assert.Equal(0xFFA9, GameSession.RewardLimitUpdateNt);
         Assert.Equal(0x9322, GameSession.DungeonCoolTimesNt);
+        Assert.Equal(0xE333, GameSession.RefreshCurrencyNt);
     }
 
     [Fact]
