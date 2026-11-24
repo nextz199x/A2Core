@@ -39,6 +39,8 @@ public sealed class BombBoxCarryTests
         Assert.NotEmpty(boxes);
         Assert.All(boxes, b => Assert.Equal(new CarryBox(1196, true, 10_000), b.Carry));
         Assert.All(WorldObjects.ObjectsOn(100002).Where(o => o.Env == 1400824), t => Assert.True(t.Destructible));
+        Assert.All(WorldObjects.ObjectsOn(100002).Where(o => o.Env == 1400824), t =>
+            Assert.True(GameSession.BombPlantReach(t) >= 3000, $"skill 5003 reaches 30 m (tower {t.Name})"));
         Assert.Equal(1196, RewardBoxes.Embedded.Abnormal(160020)!.Group);
     }
 
@@ -250,10 +252,10 @@ public sealed class BombBoxCarryTests
         await session.HandleAsync(Use(WorldObjects.FirstKey + box.i), t + 100);
         await session.TickAsync(t + 100 + GameSession.CarryPickupMs);
         var plantReach = GameSession.BombPlantReach(tower.o);
-        var far = tower.o.At with { X = tower.o.At.X + plantReach + 2000, Y = tower.o.At.Y + 2000 };
+        var far = tower.o.At with { X = tower.o.At.X + plantReach + 8000, Y = tower.o.At.Y + 8000 };
         await MapEventScenarioHelpers.SyncPositionAsync(session, tower.o.At, t + 3000);
         var goalsBefore = run!.Goals.ToArray();
-        await session.HandleAsync(new PacketWriter().U16(0x3701).U8(2).Vec3(far).U16(0).F32(0).U8(1).U64(1).ToArray(), t + 4000);
+        await MapEventScenarioHelpers.SyncPositionAsync(session, far, t + 4000);
         await session.HandleAsync(GroundStart(5003), t + 4010);
         await session.TickAsync(t + 4500);
         Assert.Equal(goalsBefore, run.Goals);

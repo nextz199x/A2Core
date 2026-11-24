@@ -37,8 +37,14 @@ partial class GameSession
     /// <summary>Bomb throw animation length before the natural SkillEnd_NT (OURS; no capture).</summary>
     const int BombThrowMs = 700;
 
-    /// <summary>Max horizontal distance to plant on a tower: EnvObj InteractRange + <see cref="WorldObjects.InteractSlack"/> (matches InteractEnvObj_RQ).</summary>
-    public static double BombPlantReach(WorldObject tower) => tower.InteractRange + WorldObjects.InteractSlack;
+    /// <summary>Skill 5003 NeedSkillUseRange (Skill.json: 3000) lets the throw land from 30 m, not only at the
+    /// tower's 650 cm interact range. Add a small latency margin so a throw at the edge is not refused.</summary>
+    public const double BombThrowRange = 3_000, BombThrowSlack = 250;
+
+    /// <summary>Max horizontal distance to plant on a tower: the bomb skill's ground range (or the tower's interact
+    /// range, whichever is larger).</summary>
+    public static double BombPlantReach(WorldObject tower) =>
+        Math.Max(tower.InteractRange + WorldObjects.InteractSlack, BombThrowRange + BombThrowSlack);
 
     public static bool InBombPlantRange(Vector3d here, WorldObject tower)
     {
