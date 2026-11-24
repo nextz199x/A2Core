@@ -666,7 +666,12 @@ public sealed partial class GameSession
             ? await InventoryChangesAsync(ct, IncreaseAchievementReward, 0)
             : [];
         var takeResults = results.Select(r => (r.Group, (IReadOnlyList<byte>)r.GroupSteps, (IReadOnlyDictionary<int, int>)r.Steps)).ToList();
-        var batchResult = takeResults.Count > 0 ? 0 : 1;
+        // A collect with nothing left is a successful no-op; the client shows "Please try again later" for result 1
+        // (the attendance tab after its day is already collected). Result 1 is kept for a real failure: a step looked
+        // claimable but the store refused it, or the request named no group at all.
+        var hadClaimable = groups.Any(gid => Achievements.InGroup(gid).Any(entry => Listed(entry, now) &&
+            (achievements.GetValueOrDefault(entry.Id)?.RewardedStep ?? 0) < (achievements.GetValueOrDefault(entry.Id)?.Count ?? 0)));
+        var batchResult = takeResults.Count > 0 || !hadClaimable ? 0 : 1;
         var claimedAchievementIds = results.SelectMany(r => r.Steps.Keys).Distinct().ToList();
         if (takeResults.Count > 0) await FlushAchievementsAsync(now, ct, force: true);
         // Official claim-all (capture 001158): 0x561b inventory deltas, one 0x5684 for claimed steps, then TakeAchievementRewardBatch_RS.
@@ -794,7 +799,13 @@ public sealed partial class GameSession
         return w.ToArray();
     }
 
-    /// <summary>0xe34d Attendance_RQ (empty body): today's check-in on every open board (one UTC day each), then each active tab's unclaimed step reward through the current count. Attendance_RS is opcode + _result u16 (0 success, 1 partial / bag); the client expects 0x561b when items grant, achievement updates, and AccountContentsInfoList_NT 0x56b6 on every reply.</summary>
+    /// <summary>
+    /// 0xe34d Attendance_RQ (empty body): today's check-in on every open board (one game day each). The day's step
+    /// reward is NOT taken here: the official server answered only 0xe34e (capture 20261124-130131 #49843, no 0x561b
+    /// or 0x5684), and the client's attendance tab "Collect Rewards" sends the 0x5689 batch for category 7.
+    /// Taking it at check-in left the collect with nothing to claim, so 0x568a reported result 1 and the tab showed
+    /// "please try again later". Attendance_RS is opcode + _result u16 (0 success).
+    /// </summary>
     async Task<List<byte[]>> AttendanceAsync(long now, CancellationToken ct)
     {
         var checkIn = new List<byte[]>();
@@ -805,42 +816,12 @@ public sealed partial class GameSession
             if (state is { UpdatedMs: > 0 } && state.UpdatedMs >= today && state.Count > 0) continue;
             checkIn.AddRange(Achieve("Attendance", 1, e => e.Id == board.Achievement, now));
         }
+        if (checkIn.Count > 0) await FlushAchievementsAsync(now, ct, force: true);
 
-        var rewardReplies = new List<byte[]>();
-        var claimedSteps = new List<(int Id, int Step)>();
-        var grantedItems = false;
-        var failedClaims = 0;
-        foreach (var (_, board) in LatestAttendanceSeasons(profileRace, now))
-        {
-            var id = board.Achievement;
-            if (Achievements.Of(id) is not { } entry || !achievements.TryGetValue(id, out var state)) continue;
-            while (true)
-            {
-                var step = state.RewardedStep + 1;
-                if (step > entry.Steps.Length || state.Count < entry.StepCount(step)) break;
-                var taken = await TakeStepAsync(id, step, now, ct, syncInventory: false);
-                if (taken is null) { failedClaims++; break; }
-                if (entry.StepRewards(step).Count > 0) grantedItems = true;
-                claimedSteps.Add((id, step));
-                rewardReplies.AddRange(taken);
-            }
-        }
-
-        if (claimedSteps.Count > 0) await FlushAchievementsAsync(now, ct, force: true);
-
-        var result = (ushort)(failedClaims > 0 ? 1 : 0);
-        var batch = new List<byte[]> { PacketWriter.Opcode(AttendanceRs).U16(result).ToArray() };
+        var batch = new List<byte[]> { PacketWriter.Opcode(AttendanceRs).U16(0).ToArray() };
         batch.AddRange(checkIn);
-        if (grantedItems)
-        {
-            batch.AddRange(await InventoryChangesAsync(ct, IncreaseAchievementReward, 0));
-            var rewardItems = claimedSteps.SelectMany(p => Achievements.Of(p.Id)?.StepRewards(p.Step) ?? []).Select(t => t.ItemId);
-            batch.AddRange(await AutoUseAcquiredItemsAsync(rewardItems, now, ct));
-            batch.AddRange(await AutoPresentGrantedTitlesAsync(rewardItems, ct));
-        }
-        batch.AddRange(rewardReplies);
         batch.Add(AccountContentsInfoList(now));
-        LogAttendanceCollect(checkIn.Count > 0, claimedSteps.Count, failedClaims, result);
+        LogAttendanceCollect(checkIn.Count > 0, 0, 0, 0);
         return batch;
     }
 
