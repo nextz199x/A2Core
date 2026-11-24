@@ -73,6 +73,42 @@ public sealed class SprintDashTests
     }
 
     [Fact]
+    public async Task Variant_11_reasserts_the_sprint_when_the_roll_cancels_it()
+    {
+        var store = new FakeCharacterStore { Progress = (10, 0) };
+        var session = await GameSessionTestHelpers.EnterWorldAsync(store, Now, level: 10);
+        session.DashVariant = 11;
+        await session.HandleAsync(SprintOn(), Now);
+        await session.HandleAsync(DodgeCast(), Now + 4);
+        var flush = await session.TickAsync(Now + 60);
+        Assert.Equal([0x8d03, 0x3741, 0x3802, 0x3801, 0x382a, 0x8d00], Opcodes(flush.Where(p =>
+            GameSessionTestHelpers.Op(p) is 0x8d03 or 0x3741 or 0x3802 or 0x3801 or 0x382a or 0x8d00)));
+        var off = await session.HandleAsync(new PacketWriter().U16(0x3705).I64(1).ToArray(), Now + 80);
+        Assert.DoesNotContain(off, p => GameSessionTestHelpers.Op(p) is 0x3742 or 0x3722);
+        Assert.Contains(off, p => GameSessionTestHelpers.Op(p) == 0x3741);
+        Assert.True(session.IsSprinting);
+        // The next off (past the opening window) still ends the sprint normally.
+        var later = await session.HandleAsync(new PacketWriter().U16(0x3705).I64(1).ToArray(), Now + 1000);
+        Assert.Contains(later, p => GameSessionTestHelpers.Op(p) == 0x3742);
+        Assert.False(session.IsSprinting);
+    }
+
+    [Fact]
+    public async Task Builder_combat_state_writes_the_official_0x8d21_form()
+    {
+        // Live stance test: force combat off and confirm the packet is key | 00 | state.
+        var store = new FakeCharacterStore { Progress = (10, 0) };
+        var session = await GameSessionTestHelpers.EnterWorldAsync(store, Now, level: 10);
+        var on = session.SetBuilderCombatState(true, Now);
+        Assert.Contains(on, p => p.SequenceEqual(GamePackets.CombatState(session.PlayerKey, true)));
+        var off = session.SetBuilderCombatState(false, Now + 1);
+        var packet = Assert.Single(off);
+        Assert.Equal(GamePackets.CombatState(session.PlayerKey, false), packet);
+        Assert.Equal(new byte[] { 0x21, 0x8d }, packet[..2]);
+        Assert.Equal(0, packet[^1]);
+    }
+
+    [Fact]
     public void Dodge_result_matches_the_official_flags_first_wire()
     {
         // Official capture 20261124-130131 #1418: 01 38 | 00 (flags) | 00 00 (result) | 24 D9 A7 00 (CombatDodge).

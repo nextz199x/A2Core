@@ -252,7 +252,9 @@ public sealed partial class GameSession(GameData data, GameSessionOptions option
     /// request (official answers 45-85 ms later, one tick). 9 is 7 but starts CombatDodge instead of NormalDodge.
     /// Variants 1-5 sent the sprint reply on its own, a frame before the dash, and the client never left the dash.
     /// 10 is legacy (refused the dash with 9-byte 0x3801 result 1 and froze live 2026-11-01); default is variant 7.
-    /// A standing dodge (no sprint) on 6-10 keeps variant 0: that is the reply this client already finishes.
+    /// 11 is 8, but the client's 0x3705 inside the sprint-opening window is answered with the sprint ack again instead of
+    /// the off notice (a sprint started on a mount keeps running on foot after the dismount, so the client can hold it).
+    /// A standing dodge (no sprint) on 6-11 keeps variant 0: that is the reply this client already finishes.
     /// </summary>
     /// <summary>
     /// Default 8: the official server answered 45-85 ms after the sprint request (one tick), not in the same
@@ -261,13 +263,14 @@ public sealed partial class GameSession(GameData data, GameSessionOptions option
     /// before the dash packets arrive, as in the capture. Variant 0 stays available via //DashVariant.
     /// </summary>
     public int DashVariant { get; set; } = 8;
-    public const int DashVariantMax = 10, DodgeLateEndMs = 600, DashBatchDelayMs = 50, SprintReplyHoldMs = 80;
+    public const int DashVariantMax = 11, DodgeLateEndMs = 600, DashBatchDelayMs = 50, SprintReplyHoldMs = 80;
     /// <summary>CombatDodge right after 0x3704 skips MinCastGap and dodge cooldown (official sprint-opening dash).</summary>
     public const int SprintAutoDodgeWindowMs = 250;
     /// <summary>Sprint-on reply (and, for variant 8, the dash) waiting to share one write. Official sends them at one timestamp.</summary>
     List<byte[]>? pendingSprintReply, pendingDashBatch;
     /// <summary>Whether 0x3704 is intentionally deferred until its client auto-dodge (0x3800) arrives.</summary>
     public bool HasPendingSprintReply => pendingSprintReply is not null;
+    public bool IsSprinting => sprinting;
     long sprintOnAt;
     /// <summary>The standing dodge's pending effect: the start's action uid and when it is due.</summary>
     (int Action, long At)? dodgeEffectAt;
@@ -603,7 +606,7 @@ public sealed partial class GameSession(GameData data, GameSessionOptions option
             case 0x3708 when plain.Length >= 11: return GlideBuoyancyOn(plain);
             case 0x3709 when plain.Length >= 10: return GlideBuoyancyOff(plain);
             case 0x3719 when plain.Length >= 27: return RequestAirPath(plain);
-            case 0x3705 when plain.Length == 10: return SprintOff();
+            case 0x3705 when plain.Length == 10: return SprintOff(now);
             // CharRestStart_RQ / CharRestStop_RQ {key varint, 0 OBSERVED "473700"}: sit down / stand up (dev 0x36A4-0x36A9,
             // usmap layouts; no official reply sample, CANDIDATE). Others see the NT.
             // Per-character settings (GameSession.Settings.cs).
@@ -852,7 +855,7 @@ public sealed partial class GameSession(GameData data, GameSessionOptions option
         // burst). Writing the sprint reply on its own let this client enter the sprint a frame before the dash, and it then
         // never left the dash (live 2026-10-20, variants 1-5). Variants 7-9 hold the reply for that batch.
         List<byte[]> reply = [GamePackets.SprintCooltime(playerKey), GamePackets.SprintOnReply(playerKey)];
-        if (DashVariant is 7 or 8 or 9)
+        if (DashVariant is 7 or 8 or 9 or 11)
         {
             pendingSprintReply = reply;
             pendingDashBatch = null;
@@ -867,7 +870,7 @@ public sealed partial class GameSession(GameData data, GameSessionOptions option
     /// </summary>
     List<byte[]> DeliverDash(List<byte[]> dash, int variant)
     {
-        if (variant == 8)
+        if (variant is 8 or 11)
         {
             pendingDashBatch = dash;
             return [];
@@ -893,7 +896,7 @@ public sealed partial class GameSession(GameData data, GameSessionOptions option
     List<byte[]> FlushHeldDash(long now)
     {
         if (pendingSprintReply is null && pendingDashBatch is null) return [];
-        if (now < sprintOnAt + (DashVariant == 8 ? DashBatchDelayMs : SprintReplyHoldMs)) return [];
+        if (now < sprintOnAt + (DashVariant is 8 or 11 ? DashBatchDelayMs : SprintReplyHoldMs)) return [];
         var replies = TakePendingSprint();
         if (pendingDashBatch is { } dash)
         {
@@ -960,8 +963,24 @@ public sealed partial class GameSession(GameData data, GameSessionOptions option
         return replies;
     }
 
-    List<byte[]> SprintOff()
+    List<byte[]> SprintOff(long now)
     {
+        // Variant 11: the client ends the sprint itself right after its opening roll is accepted (live 01:32/02:13: 0x3705
+        // 16 ms after the batch). A sprint started on a mount keeps running on foot after the dismount, so the client can
+        // hold sprint on foot; re-assert it once instead of ending it, and see whether the ack re-enters the state.
+        if (DashVariant == 11 && sprinting && !dead && resources is { Sp: > 0 }
+            && now - sprintOnAt <= SprintAutoDodgeWindowMs + 100)
+        {
+            var held = TakePendingSprint();
+            if (pendingDashBatch is { } pendingDash)
+            {
+                pendingDashBatch = null;
+                held.AddRange(pendingDash);
+            }
+            sprintOnAt = now;
+            sprintTickAt = now + SprintTickMs;
+            return held.Count > 0 ? held : [GamePackets.SprintCooltime(playerKey), GamePackets.SprintOnReply(playerKey)];
+        }
         sprinting = false;
         // A sprint the client released before the held reply went out still has to be seen, or the off notice has nothing to end.
         var replies = TakePendingSprint();
@@ -2339,7 +2358,7 @@ public sealed partial class GameSession(GameData data, GameSessionOptions option
             // while the pre-recording reply shape (variant 0) let it end the dash by itself after ~260 ms as the official client does;
             // with variant 0 the client drops the sprint itself 12-75 ms after its start (119 live sprints). The variants (DashVariant)
             // return the extras one at a time, switched in-game by a builder.
-            if (sprinting && variant is 7 or 8 or 9)
+            if (sprinting && variant is 7 or 8 or 9 or 11)
             {
                 // The recorded batch (0x3802, the 9-byte 0x3801 naming CombatDodge, abnormal 200, the SP; the end 200 ms later).
                 // Variant 8 also waits out the official tick, so the end stays 200 ms after the batch leaves.
@@ -2420,6 +2439,18 @@ public sealed partial class GameSession(GameData data, GameSessionOptions option
         if (inCombat) return [];
         inCombat = true;
         return [GamePackets.CombatState(playerKey, true), .. MapEventCombatStarted(now)];
+    }
+
+    /// <summary>
+    /// Builder CombatState: force the player's combat flag and write the 0x8d21 state, so a live test can tell whether the
+    /// client's sprint opening roll comes from a combat stance it never got cleared (the client sends no 0x383a/0x383c).
+    /// </summary>
+    public List<byte[]> SetBuilderCombatState(bool on, long now)
+    {
+        if (on) return EnterCombat(now);
+        inCombat = false;
+        combatUntil = 0;
+        return [GamePackets.CombatState(playerKey, false)];
     }
 
     /// <summary>Corpses: removed (0x3642 flag 3) CorpseMs after the kill; at the respawn a fresh 0x3641 at full HP.</summary>
