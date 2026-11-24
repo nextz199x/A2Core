@@ -254,8 +254,12 @@ public sealed partial class GameSession(GameData data, GameSessionOptions option
     /// 10 is legacy (refused the dash with 9-byte 0x3801 result 1 and froze live 2026-11-01); sprint dashes use variant 0.
     /// A standing dodge (no sprint) on 6-10 keeps variant 0: that is the reply this client already finishes.
     /// </summary>
-    /// <summary>Default 0: accept the client's auto CombatDodge after 0x3704 (NormalDodge dash + sustained sprint).</summary>
-    public int DashVariant { get; set; } = 0;
+    /// <summary>
+    /// Default 7: hold the sprint reply and send it in the same write as the dash — the official 2026-11-24 batch
+    /// (0x8d03, 0x3741, 0x3802, 0x3801, 0x382a, 0x8d00 at one timestamp). Variant 0 answered the sprint first and
+    /// the client turned it off 16 ms later with 0x3705 on every sprint, so the player only got the dash.
+    /// </summary>
+    public int DashVariant { get; set; } = 7;
     public const int DashVariantMax = 10, DodgeLateEndMs = 600, DashBatchDelayMs = 50, SprintReplyHoldMs = 80;
     /// <summary>CombatDodge right after 0x3704 skips MinCastGap and dodge cooldown (official sprint-opening dash).</summary>
     public const int SprintAutoDodgeWindowMs = 250;
