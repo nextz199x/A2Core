@@ -255,12 +255,12 @@ public sealed partial class GameSession(GameData data, GameSessionOptions option
     /// A standing dodge (no sprint) on 6-10 keeps variant 0: that is the reply this client already finishes.
     /// </summary>
     /// <summary>
-    /// Default 7 batches the sprint acknowledgement with its dash, matching the official capture. The earlier
-    /// variant-7 freeze was traced to a malformed dodge abnormal (_skill_id was present; official mask is 0x11),
-    /// now corrected. Variant 0 is available via //DashVariant as a fallback; in this client it immediately sends
-    /// 0x3705 after the dash and never sustains the sprint.
+    /// Default 8: the official server answered 45-85 ms after the sprint request (one tick), not in the same
+    /// millisecond. With the same-tick batch (variant 7) this client sends 0x3705 16 ms later and turns the sprint
+    /// off; hold the sprint ack and the dash until <see cref="DashBatchDelayMs"/> so the sprint is established
+    /// before the dash packets arrive, as in the capture. Variant 0 stays available via //DashVariant.
     /// </summary>
-    public int DashVariant { get; set; } = 7;
+    public int DashVariant { get; set; } = 8;
     public const int DashVariantMax = 10, DodgeLateEndMs = 600, DashBatchDelayMs = 50, SprintReplyHoldMs = 80;
     /// <summary>CombatDodge right after 0x3704 skips MinCastGap and dodge cooldown (official sprint-opening dash).</summary>
     public const int SprintAutoDodgeWindowMs = 250;

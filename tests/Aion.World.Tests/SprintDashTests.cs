@@ -18,19 +18,22 @@ public sealed class SprintDashTests
     static int[] Opcodes(IEnumerable<byte[]> packets) => packets.Select(p => (int)GameSessionTestHelpers.Op(p)).ToArray();
 
     [Fact]
-    public async Task Sprint_on_then_auto_combat_dodge_matches_the_official_batch()
+    public async Task Sprint_on_then_auto_combat_dodge_waits_one_tick_and_sends_the_official_batch()
     {
         var store = new FakeCharacterStore { Progress = (10, 0) };
         var session = await GameSessionTestHelpers.EnterWorldAsync(store, Now, level: 10);
-        Assert.Equal(7, session.DashVariant);
+        Assert.Equal(8, session.DashVariant);
         var spBefore = session.Resource!.Sp;
         var on = await session.HandleAsync(SprintOn(), Now);
-        Assert.Empty(on);   // held for the dash's write, as the official server answered
-        Assert.True(session.HasPendingSprintReply); // 0x3704 is deferred, not unanswered
+        Assert.Empty(on);   // held for the official one-tick answer
+        Assert.True(session.HasPendingSprintReply);
         var dash = await session.HandleAsync(DodgeCast(), Now + 4);
-        Assert.Equal([0x8d03, 0x3741, 0x3802, 0x3801, 0x382a, 0x8d00], Opcodes(dash));
+        Assert.Empty(dash); // the whole batch waits for the tick, as the official 45-85 ms answer did
+        var flush = (await session.TickAsync(Now + 60)).Where(p =>
+            GameSessionTestHelpers.Op(p) is 0x8d03 or 0x3741 or 0x3802 or 0x3801 or 0x382a or 0x8d00).ToList();
+        Assert.Equal([0x8d03, 0x3741, 0x3802, 0x3801, 0x382a, 0x8d00], Opcodes(flush));
         Assert.False(session.HasPendingSprintReply);
-        Assert.Equal(GameSession.NormalDodge, BitConverter.ToInt32(dash[2], 4));
+        Assert.Equal(GameSession.NormalDodge, BitConverter.ToInt32(flush[2], 4));
         Assert.Equal(spBefore - GameSession.NormalDodgeSp, session.Resource.Sp);
     }
 
@@ -61,6 +64,7 @@ public sealed class SprintDashTests
         var store = new FakeCharacterStore { Progress = (10, 0) };
         var session = await GameSessionTestHelpers.EnterWorldAsync(store, Now, level: 10);
         session.SetResource('S', GameSession.NormalDodgeSp - 1);
+        session.DashVariant = 7;
         var spBefore = session.Resource!.Sp;
         await session.HandleAsync(SprintOn(), Now);
         var dash = await session.HandleAsync(DodgeCast(), Now + 4);
