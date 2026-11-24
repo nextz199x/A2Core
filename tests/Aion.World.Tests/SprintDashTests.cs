@@ -35,6 +35,14 @@ public sealed class SprintDashTests
     }
 
     [Fact]
+    public void Dodge_result_matches_the_official_flags_first_wire()
+    {
+        // Official capture 20261124-130131 #1418: 01 38 | 00 (flags) | 00 00 (result) | 24 D9 A7 00 (CombatDodge).
+        Assert.Equal(Convert.FromHexString("013800000024d9a700"), GamePackets.DodgeResult(GameSession.CombatDodge));
+        Assert.Equal(Convert.FromHexString("013800010024d9a700"), GamePackets.DodgeResult(GameSession.CombatDodge, 1));
+    }
+
+    [Fact]
     public async Task Sprint_on_then_dash_keeps_the_legacy_variant_0_reply_for_live_tests()
     {
         var store = new FakeCharacterStore { Progress = (10, 0) };

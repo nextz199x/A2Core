@@ -1724,7 +1724,13 @@ public static class GamePackets
     public static byte[] CastResult(int skill, int result = 0, byte changeToggle = 0) =>
         PacketWriter.Opcode(0x3801).U16(result).I32(skill).U8(changeToggle).ToArray();
 
-    public static byte[] DodgeResult(int skill, int result = 0) => PacketWriter.Opcode(0x3801).U16(result).I32(skill).U8(0).ToArray();
+    /// <summary>
+    /// 0x3801 for a dodge in the official flags-first form: u8 flags (0) | result u16 | skill i32. The official capture's
+    /// 0x3801 is 01 38 00 00 00 24 D9 A7 00 (flags 0, result 0, CombatDodge 11000100); the old result-first order put the
+    /// skill's low byte where the client reads flags, so the client never accepted the dash (locked legs, sprint dropped).
+    /// </summary>
+    public static byte[] DodgeResult(int skill, int result = 0) =>
+        PacketWriter.Opcode(0x3801).U8(0).U16(result).I32(skill).ToArray();
 
     /// <summary>
     /// 0x3804 with switch 00: a self skill's effect (OBSERVED 50-60 ms after all 36 official CombatDodge starts): target, 00 00, actor,
