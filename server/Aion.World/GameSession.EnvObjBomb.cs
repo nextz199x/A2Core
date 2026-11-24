@@ -270,8 +270,11 @@ partial class GameSession
     {
         if (position is not { } here) return null;
         var objects = WorldObjects.ObjectsOn(worldMap);
-        var candidates = shownObjects.Where(i => i < objects.Count && EnvObjBombTowerRemaining(i, objects[i], now) && InBombPlantRange(here, objects[i]))
-            .OrderBy(i => objects[i].At.DistanceSquared(here)).ToList();
+        // Not every tower is pushed to the client's shown set while the player stands at it (map-event visibility is
+        // distance-triggered); the plant is in reach, so consider every remaining tower and let the range decide.
+        var candidates = objects.Select((o, i) => (o, i))
+            .Where(x => EnvObjBombTowerRemaining(x.i, x.o, now) && InBombPlantRange(here, x.o))
+            .OrderBy(x => x.o.At.DistanceSquared(here)).Select(x => x.i).ToList();
         if (candidates.Count == 0) return null;
         var selected = selectedTarget - WorldObjects.FirstKey;
         return candidates.Contains(selected) ? selected : candidates[0];
@@ -300,8 +303,8 @@ partial class GameSession
             && InBombPlantRange(here, objects[selected]) && PlayerMayUseEnvObj(selected, objects[selected]))
             return "ok";
         if (BombTarget(now) is not null) return "ok";
-        var near = shownObjects.Where(i => i < objects.Count && objects[i].Destructible)
-            .OrderBy(i => objects[i].At.DistanceSquared(here)).FirstOrDefault();
+        var near = objects.Select((o, i) => (o, i)).Where(x => x.o.Destructible)
+            .OrderBy(x => x.o.At.DistanceSquared(here)).Select(x => x.i).FirstOrDefault();
         if (near >= 0)
         {
             if (Broken(near, now)) return "broken";
