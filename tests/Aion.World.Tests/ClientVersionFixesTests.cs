@@ -102,4 +102,28 @@ public sealed class ClientVersionFixesTests
         var durationAt = packet.Length - 1;
         Assert.Equal(0, packet[durationAt]); // duration varint
     }
+
+    [Fact]
+    public void Party_loot_uses_the_2_0_12_distribution_opcodes()
+    {
+        Assert.Equal(0x5722, DistributionOpcodes.RollDiceRq);
+        Assert.Equal(0x5723, DistributionOpcodes.RollDiceRs);
+        Assert.Equal(0x5719, DistributionOpcodes.BidItemRq);
+        Assert.Equal(0x571A, DistributionOpcodes.BidItemRs);
+        Assert.NotEqual(GameSession.SkillChargingEndRq, DistributionOpcodes.RollDiceRq);
+        Assert.Equal(0x5723, Op(DistributionPackets.RollDiceReply(0, 1, 50)));
+        Assert.Equal(0x571A, Op(DistributionPackets.BidItemReply(0, 1, 50)));
+    }
+
+    [Fact]
+    public void Trade_uses_the_2_0_12_opcodes()
+    {
+        Assert.Equal(0xE264, GameSession.TradeSellRq);
+        Assert.Equal(0xE265, GameSession.TradeSellRs);
+        Assert.Equal(0xE266, GameSession.TradeCancelSaleRq);
+        Assert.Equal(0xE26C, GameSession.TradePurchaseRq);
+        Assert.Equal(0xE26E, GameSession.TradeSoldNt);
+        Assert.Equal(0xE271, GameSession.TradeGetSummaryRq);   // CANDIDATE: RS is 0xE272
+        Assert.Equal(0xE272, GameSession.TradeGetSummaryRs);
+    }
 }
