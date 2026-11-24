@@ -71,7 +71,7 @@ next one itself; the player only confirms and answers Windows prompts.
    no extra space) or copied. Otherwise the launcher downloads it from Steam itself
    (`Aion.Launcher.Core/SteamDownload.cs`, SteamKit2): the player signs in by scanning a QR code with
    the Steam mobile app (no password reaches the launcher), then the launcher asks for the depot key
-   and the manifest request code of depot 3393111 manifest 1699273097574069541 and fetches every
+   and the manifest request code of depot 3393111 manifest 4848810977640627068 and fetches every
    chunk from Steam's content servers into the private folder (16 chunks in parallel, each checked
    against its SHA-1 id; a bad chunk is fetched again from another server). The folder is
    `%LOCALAPPDATA%\A2CorePrivate\AION2` when the system drive has room, else `<drive>:\A2CorePrivate\AION2`
@@ -208,5 +208,5 @@ it equal to `<Version>` in AionLauncher.csproj).
 
 - A full run on a second PC: remote certificate acceptance by the client, Steam ownership checks
   without our dev tools, the per-session hosts helper, and the firewall rules with a remote server.
-- Whether Steam still serves manifest 1699273097574069541 to `download_depot`.
+- Whether Steam still serves manifest 4848810977640627068 to `download_depot`.
 - The exe is not code-signed: Windows SmartScreen warns on first start ("More info" -> "Run anyway").
