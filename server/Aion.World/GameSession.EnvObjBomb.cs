@@ -274,13 +274,20 @@ partial class GameSession
         return candidates.Contains(selected) ? selected : candidates[0];
     }
 
-    internal string BombPlantRefusalReason(long now, int skill)
+    /// <summary>Prerequisites for the carried bomb's skill, without a range check (Ready only enters the aim).</summary>
+    internal string BombSkillRefusalReason(long now, int skill)
     {
         if (resources is null) return "no_resources";
         if (dead) return "dead";
         if (skill == 0) return "no_skill";
         if (CarriedGroup is null) return "not_carrying";
         if (CarriedSkill != skill) return "wrong_skill";
+        return "ok";
+    }
+
+    internal string BombPlantRefusalReason(long now, int skill)
+    {
+        if (BombSkillRefusalReason(now, skill) is not "ok" and var basic) return basic;
         if (position is not { } here) return "no_position";
         var objects = WorldObjects.ObjectsOn(worldMap);
         var selected = selectedTarget - WorldObjects.FirstKey;
@@ -308,16 +315,27 @@ partial class GameSession
     }
 
     /// <summary>
-    /// SkillGroundReady_RQ / SkillGroundStart_RQ / SkillGroundStop_RQ. The carried bomb's skill (the buff's ActivateSkill) breaks the
-    /// tower in reach at once: the result, the tower's death and despawn, the bomb's 0x382c, then the UseEnvObj credit. Ready and
-    /// Start both do it (the client may send either; only the first finds the bomb). Any other ground skill is refused, never
-    /// left unanswered, so the client leaves its aiming state.
+    /// SkillGroundReady_RQ / SkillGroundStart_RQ / SkillGroundStop_RQ. Ready only allows the client's ground-aim
+    /// (the ring after the bomb is picked up); Start plants on the tower in reach: the result, the tower's death and
+    /// despawn, the bomb's 0x382c, then the UseEnvObj credit. Any other ground skill is refused, never left unanswered,
+    /// so the client leaves its aiming state.
     /// </summary>
     async Task<List<byte[]>> GroundSkillAsync(ushort header, byte[] plain, long now, CancellationToken ct)
     {
         if (header == SkillGroundStopRq) return [PacketWriter.Opcode(SkillGroundStopRs).U16(0).ToArray()];
         var reply = header == SkillGroundReadyRq ? SkillGroundReadyRs : SkillGroundStartRs;
         var skill = plain.Length >= 6 ? BitConverter.ToInt32(plain, 2) : 0;
+        if (header == SkillGroundReadyRq)
+        {
+            // Entering the aim is allowed anywhere; the range is checked when the player starts the plant.
+            var readyRefusal = BombSkillRefusalReason(now, skill);
+            if (readyRefusal is not "ok")
+            {
+                LogBombPlantRefused(reply, skill, readyRefusal);
+                return [GroundReply(reply, GroundSkillRefused, skill)];
+            }
+            return [GroundReply(reply, 0, skill)];
+        }
         var refusal = BombPlantRefusalReason(now, skill);
         if (refusal is not "ok")
         {
@@ -330,15 +348,11 @@ partial class GameSession
             LogBombPlantRefused(reply, skill, "out_of_range");
             return [GroundReply(reply, GroundSkillRefused, skill)];
         }
-        // Ready: refuse the aim so the client never enters its ground-aim state (SkillAction_InGroundAim blocks every skill), and
-        // plant here at once, as the env-object use does. Only the reply and the plant's own packets go out: no Stop_NT. Start
-        // (the client really aimed and clicked) is answered with success.
-        var aimed = header == SkillGroundStartRq;
         var tower = objects[index];
         Note($"map_event:bomb_plant:env={tower.Env} idx={index} skill={skill} map={worldMap} at=({at.X:F0},{at.Y:F0},{at.Z:F0})");
         PlaytestDebug.Action("bomb_plant", ("env", tower.Env), ("index", index), ("skill", skill), ("map", worldMap));
         RecordQaBombTowerCredit(tower, at, now);
-        var replies = new List<byte[]> { GroundReply(reply, aimed ? 0 : GroundSkillRefused, skill) };
+        var replies = new List<byte[]> { GroundReply(reply, 0, skill) };
         replies.AddRange(BreakEnvObj(index, tower, now));
         foreach (var run in mapEventRuns.Where(r => !r.Finished))
             BumpBombTowerProgress(run, CountSpentBombTowers(now), BombTowerCreditsFromRun(run));

@@ -661,7 +661,7 @@ public static class QaMapEventRunner
                             return WalkTowardBombTower(driver, session, me, now, state, obj);
                         if (TryBombRangeProbe(driver, session, run, me, now, state, obj, bombSkill) is { } probe)
                             return probe;
-                        return QuestDriverSlice.Act([BotRequests.BombGroundReady(bombSkill)], $"map_event:bomb_plant:{obj.Env}");
+                        return QuestDriverSlice.Act([BotRequests.BombGroundStart(bombSkill)], $"map_event:bomb_plant:{obj.Env}");
                     }
                     if (state.PendingEnvKey == key && now < state.PendingEnvUntil)
                         return QuestDriverSlice.Wait("map_event:env_channel");
@@ -859,7 +859,7 @@ public static class QaMapEventRunner
         state.BombProbeAt = me;
         state.BombProbeMoveSince = 0;
         run.BombProbeDue = false;
-        return QuestDriverSlice.Act([BotRequests.BombGroundReady(bombSkill)], "map_event:bomb_range_probe");
+        return QuestDriverSlice.Act([BotRequests.BombGroundStart(bombSkill)], "map_event:bomb_range_probe");
     }
 
     const int KillSpawnerHeightRepositionDzCm = 500;
@@ -1313,7 +1313,7 @@ public static class QaMapEventRunner
                     return QuestDriverSlice.Wait("map_event:bomb_plant:need_skill");
                 if (TryBombRangeProbe(driver, session, run, me, now, state, obj, bombSkill) is { } probe)
                     return probe;
-                return QuestDriverSlice.Act([BotRequests.BombGroundReady(bombSkill)], $"map_event:bomb_plant:{obj.Env}");
+                return QuestDriverSlice.Act([BotRequests.BombGroundStart(bombSkill)], $"map_event:bomb_plant:{obj.Env}");
             }
             if (CarryBombSlice(driver, session, me, now, state, objects, NameMatchesBombObjective) is { } pick)
                 return pick;
