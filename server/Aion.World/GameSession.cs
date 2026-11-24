@@ -517,8 +517,8 @@ public sealed partial class GameSession(GameData data, GameSessionOptions option
             case NPShopPurchaseRq when plain.Length >= 10: return await NPShopPurchaseAsync(plain, now, ct);
             case ShopGiftPurchaseRq when plain.Length >= 10: return await ShopGiftPurchaseAsync(plain, now, ct);
             case TrustLimitInfoRq: return TrustLimitInfo(now);
-            case GamePackets.MonolithResonateRq when plain.Length >= 14: return await MonolithResonateRequestAsync(plain, ct);
-            case GamePackets.SyncMonolithAccountAchievementsRq when plain.Length >= 6: return await SyncMonolithAccountAchievementsAsync(plain);
+            case GamePackets.MonolithResonateRq when plain.Length >= 11: return await MonolithResonateRequestAsync(plain, ct);
+            case GamePackets.SyncMonolithAccountAchievementsRq when plain.Length >= 3: return await SyncMonolithAccountAchievementsAsync(plain);
             case ItemRestoreRq when plain.Length >= 3: return await RestoreItemsAsync(plain, ct);
             case ItemEnchantRq when plain.Length >= 10: return await EnchantAsync(plain, ct);
             case ItemImprintRq when plain.Length >= 22: return await ImprintAsync(plain, ct);   // GameSession.Imprint.cs

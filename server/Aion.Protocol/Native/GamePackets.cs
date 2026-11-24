@@ -1486,8 +1486,8 @@ public static class GamePackets
     /// <summary>0x3637 InteractEnvObj_RS: result, a zero byte, object key, item key (official sample; field split CANDIDATE).</summary>
     public static byte[] InteractEnvObjReply(int key, int result = 0) => PacketWriter.Opcode(0x3637).U16(result).U8(0).Varint(key).Zeros(8).ToArray();
     /// <summary>Empyrean Monolith UI (usmap DevPacketData_GameServer_Monolith*).</summary>
-    public const ushort MonolithListNt = 0x3ba9, MonolithInfoNt = 0x3baa, MonolithResonateRq = 0x3bab, MonolithResonateRs = 0x3bac,
-        MonolithUnlockNt = 0x3bdf, SyncMonolithAccountAchievementsRq = 0x3c07, SyncMonolithAccountAchievementsRs = 0x3c08;
+    public const ushort MonolithListNt = 0xE30B, MonolithInfoNt = 0xE30C, MonolithResonateRq = 0xE30D, MonolithResonateRs = 0xE30E,
+        MonolithUnlockNt = 0xE341, SyncMonolithAccountAchievementsRq = 0xFFAC, SyncMonolithAccountAchievementsRs = 0xFFAD;
 
     /// <summary>0x3ba9 MonolithList_NT: {monolith_id, resonate_count}[] (Common_MonolithStatus).</summary>
     public static byte[] MonolithList(IReadOnlyList<(int MonolithId, int ResonateCount)> entries)
@@ -1497,9 +1497,13 @@ public static class GamePackets
         return w.ToArray();
     }
 
-    /// <summary>0x3baa MonolithInfo_NT: monolith status + env object wire key.</summary>
-    public static byte[] MonolithInfo(int monolithId, int resonateCount, int envObjKey) =>
-        PacketWriter.Opcode(MonolithInfoNt).I32(monolithId).I32(resonateCount).I32(envObjKey).ToArray();
+    /// <summary>0xE30C MonolithInfo_NT: flag byte, Common_MonolithStatus, env object key (varint) when flag bit0 is set.</summary>
+    public static byte[] MonolithInfo(int monolithId, int resonateCount, int envObjKey)
+    {
+        var w = PacketWriter.Opcode(MonolithInfoNt).U8(envObjKey != 0 ? 1 : 0).I32(monolithId).I32(resonateCount);
+        if (envObjKey != 0) w.Varint(envObjKey);
+        return w.ToArray();
+    }
 
     /// <summary>0x3bdf MonolithUnlock_NT: first sight of a monolith (Common_MonolithStatus).</summary>
     public static byte[] MonolithUnlock(int monolithId, int resonateCount) =>
@@ -1509,7 +1513,7 @@ public static class GamePackets
     public static byte[] MonolithResonateReply(int result, int monolithId, int itemId, int itemCount, int prevResonateCount, int resonateCount,
         IReadOnlyList<(int ItemId, int Count)> rewardItems)
     {
-        var w = PacketWriter.Opcode(MonolithResonateRs).I32(result).I32(monolithId).I32(itemId).I32(itemCount).I32(prevResonateCount)
+        var w = PacketWriter.Opcode(MonolithResonateRs).U16(result).I32(monolithId).I32(itemId).I32(itemCount).I32(prevResonateCount)
             .I32(resonateCount).Varint(rewardItems.Count);
         foreach (var (id, count) in rewardItems) w.I32(id).U8(0).I32(count);
         return w.ToArray();
@@ -1517,7 +1521,7 @@ public static class GamePackets
 
     /// <summary>0x3c08 SyncMonolithAccountAchievements_RS: result + reward item list (Common_RewardItem).</summary>
     public static byte[] SyncMonolithAccountAchievementsReply(int result = 0) =>
-        PacketWriter.Opcode(SyncMonolithAccountAchievementsRs).I32(result).Varint(0).ToArray();
+        PacketWriter.Opcode(SyncMonolithAccountAchievementsRs).U16(result).Varint(0).ToArray();
 
     /// <summary>0x9232 EngravedTeleportArtifactList_NT: the Kibelisks the character has bound to.</summary>
     public static byte[] EngravedTeleportArtifacts(IReadOnlyList<int> ids)

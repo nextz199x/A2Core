@@ -75,11 +75,11 @@ public static class SocialOpcodes
     public const ushort PartyRecentMemberRq = E3Base + 1482, PartyRecentMemberRs = E3Base + 1483;
 
     // Duel, catalogue 1126..1140, late run (CANDIDATE 0x933c..0x934a; alternative 0x9259..0x9267).
-    public const ushort DuelCallOutRq = LateBase + 1126, DuelCallOutRs = LateBase + 1127, DuelCallOutNt = LateBase + 1128,
-        DuelCallOutAcceptRq = LateBase + 1129, DuelCallOutAcceptRs = LateBase + 1130, DuelCallOutAcceptNt = LateBase + 1131,
-        DuelCallOutRejectRq = LateBase + 1132, DuelCallOutRejectRs = LateBase + 1133, DuelCallOutRejectNt = LateBase + 1134,
-        DuelStateUpdateNt = LateBase + 1135, DuelCompleteNt = LateBase + 1136, DuelResultNt = LateBase + 1137,
-        DuelRingOutNt = LateBase + 1138, DuelRingInNt = LateBase + 1139, DuelCancelNt = LateBase + 1140;
+    public const ushort DuelCallOutRq = 0x9400, DuelCallOutRs = 0x9401, DuelCallOutNt = 0x9402,
+        DuelCallOutAcceptRq = 0x9403, DuelCallOutAcceptRs = 0x9404, DuelCallOutAcceptNt = 0x9405,
+        DuelCallOutRejectRq = 0x9406, DuelCallOutRejectRs = 0x9407, DuelCallOutRejectNt = 0x9408,
+        DuelStateUpdateNt = 0x9409, DuelCompleteNt = 0x940A, DuelResultNt = 0x940B,
+        DuelRingOutNt = 0x940C, DuelRingInNt = 0x940D, DuelCancelNt = 0x940E;
 
     /// <summary>The same catalogue entry under the alternative late base (0x92 run continued): 0x933c -> 0x9259.</summary>
     public static ushort Alternative(ushort lateOpcode) => (ushort)(lateOpcode - (LateBase - LateAlternativeBase));

@@ -126,4 +126,48 @@ public sealed class ClientVersionFixesTests
         Assert.Equal(0xE271, GameSession.TradeGetSummaryRq);   // CANDIDATE: RS is 0xE272
         Assert.Equal(0xE272, GameSession.TradeGetSummaryRs);
     }
+
+    [Fact]
+    public void Godstone_and_duel_use_the_2_0_12_opcodes()
+    {
+        Assert.Equal(0x5634, GameSession.GodstoneUpdateNt);
+        Assert.Equal(0x5635, GameSession.ItemEnchantGodstoneRq);
+        Assert.Equal(0x5636, GameSession.ItemEnchantGodstoneRs);
+        Assert.Equal(0x5637, GameSession.ItemEnchantGodstoneNt);
+        Assert.Equal(0x5638, GameSession.CombineGodstoneRq);
+        Assert.Equal(0x9400, SocialOpcodes.DuelCallOutRq);
+        Assert.Equal(0x9409, SocialOpcodes.DuelStateUpdateNt);
+        Assert.Equal(0x940E, SocialOpcodes.DuelCancelNt);
+    }
+
+    [Fact]
+    public void Monolith_uses_the_2_0_12_opcodes_and_info_flag()
+    {
+        Assert.Equal(0xE30B, GamePackets.MonolithListNt);
+        Assert.Equal(0xE30C, GamePackets.MonolithInfoNt);
+        Assert.Equal(0xE30D, GamePackets.MonolithResonateRq);
+        Assert.Equal(0xE30E, GamePackets.MonolithResonateRs);
+        Assert.Equal(0xE341, GamePackets.MonolithUnlockNt);
+        Assert.Equal(0xFFAC, GamePackets.SyncMonolithAccountAchievementsRq);
+        var info = GamePackets.MonolithInfo(7, 3, 0x1234);
+        Assert.Equal(0xE30C, Op(info));
+        Assert.Equal(1, info[2]);                        // env key present
+        Assert.Equal(7, BitConverter.ToInt32(info, 3));
+        Assert.Equal(3, BitConverter.ToInt32(info, 7));
+        Assert.Equal(0xB4, info[11]);                    // varint 0x1234
+        Assert.Equal(0x24, info[12]);
+    }
+
+    [Fact]
+    public void Arena_and_matching_use_the_2_0_12_opcodes()
+    {
+        Assert.Equal(0xE30F, GameSession.MatchingStateChangeNt);
+        Assert.Equal(0xE310, GameSession.MatchingStartRq);
+        Assert.Equal(0xE312, GameSession.MatchingStartResponseRq);
+        Assert.Equal(0xE314, GameSession.MatchingCancelRq);
+        Assert.Equal(0xE31A, GameSession.ArenaDungeonReadyRq);
+        Assert.Equal(0xE325, GameSession.ArenaDungeonKillNt);
+        Assert.Equal(0xE32B, GameSession.ArenaRecordRq);
+        Assert.Equal(0xE32C, GameSession.ArenaRecordRs);
+    }
 }
