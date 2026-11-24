@@ -524,7 +524,9 @@ public sealed class NativeGameListener(NativeOptions options, IServiceProvider s
                         Logger.LogInformation("Native game BuilderCmd_RQ ({Length} bytes): {Body}", plain.Length,
                             Convert.ToHexString(plain.AsSpan(0, Math.Min(plain.Length, 1024))));
                     else if (replies.Count == 0 && header >= 0 && !GameSession.SilentRequests.Contains(header)
-                        && !(header == 0x3704 && session.HasPendingSprintReply) && GameSession.PositionReport(plain) is null)
+                        && !(header == 0x3704 && session.HasPendingSprintReply)
+                        && !(header == 0x3800 && session.HasPendingSprintReply)   // the sprint dash is held for the batch
+                        && GameSession.PositionReport(plain) is null)
                     {
                         var first = unanswered.Add(header);
                         diagnostics?.Unanswered(header, first);
