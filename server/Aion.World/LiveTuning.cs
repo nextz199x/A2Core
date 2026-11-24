@@ -14,12 +14,16 @@ public static class LiveTuning
     static long stamp;
     static int cached = -1;
 
+    /// <summary>Off by default so tests never pick up the machine's runtime file; the host enables it at startup.</summary>
+    public static bool Enabled { get; set; }
+
     /// <summary>
     /// The variant written in the tuning file, or null when there is no file, it is not readable, or the value is out of
     /// range. The file's mtime caches the parse, so calling this per sprint is a single stat.
     /// </summary>
     public static int? DashVariant()
     {
+        if (!Enabled) return null;
         for (var dir = new DirectoryInfo(AppContext.BaseDirectory); dir is not null; dir = dir.Parent)
         {
             var path = Path.Combine(dir.FullName, ".start-all", "runtime", DashVariantFile);

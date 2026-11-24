@@ -257,12 +257,14 @@ public sealed partial class GameSession(GameData data, GameSessionOptions option
     /// A standing dodge (no sprint) on 6-11 keeps variant 0: that is the reply this client already finishes.
     /// </summary>
     /// <summary>
-    /// Default 8: the official server answered 45-85 ms after the sprint request (one tick), not in the same
-    /// millisecond. With the same-tick batch (variant 7) this client sends 0x3705 16 ms later and turns the sprint
-    /// off; hold the sprint ack and the dash until <see cref="DashBatchDelayMs"/> so the sprint is established
-    /// before the dash packets arrive, as in the capture. Variant 0 stays available via //DashVariant.
+    /// Default 11: the official server answered 45-85 ms after the sprint request (one tick), not in the same millisecond
+    /// (variant 8's hold). Even then this client ends the sprint itself 16 ms after the batch when the on-foot sprint
+    /// opening roll (0x3718 + 0x3800) is accepted, while a sprint started on a mount keeps running on foot. Variant 11
+    /// answers that 0x3705 inside the opening window with the sprint ack again, which live test 2026-11-25 confirmed
+    /// matches the official feel (roll, then sustained sprint). Variant 0 and 8 stay available via
+    /// .start-all/runtime/dash-variant.txt (LiveTuning).
     /// </summary>
-    public int DashVariant { get; set; } = 8;
+    public int DashVariant { get; set; } = 11;
     public const int DashVariantMax = 11, DodgeLateEndMs = 600, DashBatchDelayMs = 50, SprintReplyHoldMs = 80;
     /// <summary>CombatDodge right after 0x3704 skips MinCastGap and dodge cooldown (official sprint-opening dash).</summary>
     public const int SprintAutoDodgeWindowMs = 250;

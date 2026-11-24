@@ -22,7 +22,7 @@ public sealed class SprintDashTests
     {
         var store = new FakeCharacterStore { Progress = (10, 0) };
         var session = await GameSessionTestHelpers.EnterWorldAsync(store, Now, level: 10);
-        Assert.Equal(8, session.DashVariant);
+        Assert.Equal(11, session.DashVariant);
         var spBefore = session.Resource!.Sp;
         var on = await session.HandleAsync(SprintOn(), Now);
         Assert.Empty(on);   // held for the official one-tick answer
