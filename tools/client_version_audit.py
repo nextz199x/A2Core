@@ -11,8 +11,8 @@ Usage:
     python tools/client_version_audit.py --opcodes <codec_spec/opcodes.ts>
     python tools/client_version_audit.py --opcodes ... --format csv
 
-The dispatch table is external reference data (for 2.0.12:
-`projectlumiel`).  It is never copied
+The dispatch table is external reference data (projectlumiel:
+`codec_spec/opcodes.ts`).  It is never copied
 into the repository; pass its path at run time.
 """
 from __future__ import annotations
