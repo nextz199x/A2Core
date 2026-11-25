@@ -1,0 +1,562 @@
+using Aion.Application.Gameplay;
+using Aion.Protocol.Native;
+
+namespace Aion.World;
+
+// Skill chains (Skill.dat ChainSkill*): after a parent cast the server opens a timed window (0x3818) for chain
+// skills; expired or consumed entries leave with 0x3819. Hotbar context skills (0x5607/0x5608) pick which chain
+// skill sits in each context slot of a quick slot (QuickSlotInfo._context_skill_ids).
+public sealed partial class GameSession
+{
+    readonly Dictionary<int, long> activeChainSkills = [];
+    readonly Dictionary<int, long> basicChainFamilyExpiredAt = [];
+
+    /// <summary>Chain skills whose window is open (skill id -> expiry ms).</summary>
+    public IReadOnlyDictionary<int, long> ActiveChainSkills => activeChainSkills;
+
+    void ClearChainState()
+    {
+        activeChainSkills.Clear();
+        basicChainFamilyExpiredAt.Clear();
+        ClearHeldCastState();
+    }
+
+    /// <summary>Whether a chain-only skill may be cast now (parent window still open).</summary>
+    bool ChainReady(int skillId, long now)
+    {
+        if (data.Skill(skillId) is not { ChainPrev: > 0 }) return true;
+        var wire = data.BasicChainWireStepId(skillId);
+        return activeChainSkills.TryGetValue(wire, out var until) && now < until;
+    }
+
+    int ChainWireSkillId(int skillId) => data.BasicChainWireStepId(skillId);
+
+    /// <summary>FixSlot left-click combo step (Snipe / Rapid Fire / Spiral Arrow, …): shared root cooldown group.</summary>
+    int BasicChainCooldownGroup(int skillId) => data.CooldownGroup(ChainRoot(skillId));
+
+    bool IsBasicChainAdvanceCast(int skillId, bool chainSkill, bool chainAllowed) =>
+        chainSkill && chainAllowed && data.IsBasicAttackChainSkill(skillId);
+
+    /// <summary>
+    /// FixSlot combo follow-up: projectile parents (Ranger Snipe, official 2026-10-31) wait for swing lockout; melee parents
+    /// (Assassin Breaking, chain-20261012) accept the next step during the swing (Swift ~40 ms after Breaking in capture).
+    /// </summary>
+    bool BasicChainCastGapReady(int skillId, long now)
+    {
+        if (data.Skill(skillId) is not { ChainPrev: > 0 } step || !data.IsBasicAttackChainSkill(skillId)) return true;
+        if (CastLockoutOpen(now)) return true;
+        if (CastArea(step.ChainPrev) is { Projectile: > 0 }) return false;
+        return SkillCastInProgress(now);
+    }
+
+    /// <summary>0x3801 failure while a combo window stays open; optional 0x3818 resync (Skill.dat chain_window_ms, typically 3000).</summary>
+    List<byte[]> BasicChainLockoutRefusal(CastRequest request, long now)
+    {
+        var replies = new List<byte[]> { CastReplyFor(request, false) };
+        replies.AddRange(BasicChainClientResync(now));
+        return replies;
+    }
+
+    List<byte[]> BasicChainClientResync(long now)
+    {
+        if (activeChainSkills.Count == 0) return [];
+        var replies = new List<byte[]>();
+        foreach (var (child, until) in activeChainSkills.Where(p => now < p.Value).OrderBy(p => p.Key).ToList())
+        {
+            if (data.Skill(child) is not { ChainPrev: > 0 } step) continue;
+            var prev = ChainWireSkillId(step.ChainPrev);
+            var active = GamePackets.ChainSkillActiveList(prev, [child]);
+            replies.Add(active);
+            LogChainWirePacket("chain_resync", active, prev, [child]);
+        }
+        return replies;
+    }
+
+    /// <summary>After combo_window_ms (export: 3000 on Ranger Rapid Fire / Spiral Arrow), treat input as a fresh step-1 cast.</summary>
+    bool TryRestartExpiredBasicChain(ref int skill, ref CastRequest request, long now)
+    {
+        if (data.Skill(skill) is not { ChainPrev: > 0 } || !data.IsBasicAttackChainSkill(skill) || ChainReady(skill, now))
+            return false;
+        var root = ChainRoot(skill);
+        // Window elapsed but no tick ran ChainExpireReplies yet (stale activeChainSkills entry).
+        if (activeChainSkills.TryGetValue(skill, out var until) && now >= until)
+        {
+            foreach (var expired in activeChainSkills.Where(p => now >= p.Value).Select(p => p.Key).ToList())
+                activeChainSkills.Remove(expired);
+            skill = root;
+            request = request with { SkillId = root };
+            basicChainFamilyExpiredAt.Remove(root);
+            return true;
+        }
+        // Pruned by ChainExpireReplies: only restart within chain_window_ms (not a never-opened follow-up).
+        if (!basicChainFamilyExpiredAt.TryGetValue(root, out var expiredAt)) return false;
+        var grace = data.Skill(skill)?.ChainWindowMs ?? 3000;
+        if (grace <= 0) grace = 3000;
+        if (now - expiredAt > grace) return false;
+        skill = root;
+        request = request with { SkillId = root };
+        foreach (var expired in activeChainSkills.Where(p => now >= p.Value).Select(p => p.Key).ToList())
+            activeChainSkills.Remove(expired);
+        basicChainFamilyExpiredAt.Remove(root);
+        return true;
+    }
+
+    /// <summary>Self abnormal rows that gate the client's chain hotbar swap must land before 0x3818 (Defiance, Savage Roar, …).</summary>
+    List<byte[]> ChainCasterAbnormalReplies(int skillId, long now) =>
+        UsesChainCasterAbnormalOnAccept(skillId) ? ApplyCasterSkillAbnormals(skillId, now, chainAcceptPrime: true) : [];
+
+    /// <summary>After an accepted cast: open chain children, close consumed chain, expire stale windows.</summary>
+    List<byte[]> ChainCastReplies(int skillId, long now)
+    {
+        var replies = ChainExpireReplies(now);
+        if (data.Skill(skillId) is { ChainPrev: > 0 } chain)
+        {
+            // Official order: the next step's 0x3818 first, then 0x3819 consuming this one.
+            var parent = chain.ChainPrev;
+            var siblings = data.ChainFollowUpIds(parent).Where(id => id != skillId).ToList();
+            foreach (var sibling in siblings) activeChainSkills.Remove(ChainWireSkillId(sibling));
+            activeChainSkills.Remove(ChainWireSkillId(skillId));
+            if (siblings.Count > 0) replies.Add(ChainDeactive(siblings));
+            TryOpenChainChildren(skillId, now, replies);
+            replies.Add(ChainDeactive([skillId]));
+            return replies;
+        }
+        replies.AddRange(CloseChainWindowsForFamily(skillId));
+        TryOpenChainChildren(skillId, now, replies);
+        return replies;
+    }
+
+    /// <summary>Recasting a chain root closes every open window on that combo family (sibling branches included).</summary>
+    List<byte[]> CloseChainWindowsForFamily(int skillId)
+    {
+        if (activeChainSkills.Count == 0) return [];
+        var root = ChainRoot(skillId);
+        var toClose = activeChainSkills.Keys.Where(id => ChainRoot(id) == root).Order().ToList();
+        foreach (var id in toClose) activeChainSkills.Remove(ChainWireSkillId(id));
+        return toClose.Count == 0 ? [] : [ChainDeactive(toClose)];
+    }
+
+    byte[] ChainDeactive(IReadOnlyList<int> skillIds)
+    {
+        var wire = skillIds.Select(ChainWireSkillId).Distinct().Order().ToList();
+        var pkt = GamePackets.ChainSkillDeactiveList(wire);
+        LogChainWirePacket("chain_close", pkt, 0, wire);
+        return pkt;
+    }
+
+    void TryOpenChainChildren(int parentSkillId, long now, List<byte[]> replies)
+    {
+        var parentWire = ChainWireSkillId(parentSkillId);
+        if (ResolveSkillDefinition(parentSkillId) is not { } parent) return;
+        var children = data.ChainFollowUpIds(parentSkillId);
+        if (children.Count == 0) return;
+        var parentRate = parent.ChainRate <= 0 ? 10_000 : parent.ChainRate;
+        if (rng.Next(10_000) >= parentRate) return;
+        var window = parent.ChainWindowMs;
+        if (window <= 0) window = children.Select(id => data.Skill(id)?.ChainWindowMs ?? 0).DefaultIfEmpty(0).Max();
+        var opened = new List<int>();
+        foreach (var candidate in children)
+        {
+            if (data.Skill(candidate) is not { } definition) continue;
+            var child = ChainWireSkillId(candidate);
+            // FixSlot basics always advance; optional skill chains (Defiance, …) roll each follow-up's ChainRate in dat.
+            if (definition.ChainPrev > 0 && !data.IsBasicAttackChainSkill(parentSkillId))
+            {
+                var rate = definition.ChainRate <= 0 ? 10_000 : definition.ChainRate;
+                if (rng.Next(10_000) >= rate) continue;
+            }
+            var ms = definition.ChainWindowMs > 0 ? definition.ChainWindowMs : window;
+            if (ms <= 0) ms = 3000;
+            activeChainSkills[child] = now + ms;
+            opened.Add(child);
+            learned.Add(child);
+        }
+        if (opened.Count == 0) return;
+        var active = GamePackets.ChainSkillActiveList(parentWire, opened);
+        replies.Add(active);
+        LogChainWirePacket("chain_open", active, parentWire, opened);
+        PlaytestDebug.Action("chain_open",
+            ("prevSkillId", parentWire),
+            ("castSkillId", parentSkillId),
+            ("chainSkills", string.Join(',', opened)),
+            ("windowMs", opened.Max(id => activeChainSkills[id] - now)));
+    }
+
+    List<byte[]> ChainExpireReplies(long now)
+    {
+        if (activeChainSkills.Count == 0) return [];
+        var expired = activeChainSkills.Where(p => now >= p.Value).OrderBy(p => p.Key).ToList();
+        foreach (var (id, expiryAt) in expired)
+        {
+            activeChainSkills.Remove(id);
+            if (data.IsBasicAttackChainSkill(id))
+                basicChainFamilyExpiredAt[ChainRoot(id)] = expiryAt;
+        }
+        return expired.Count == 0 ? [] : [ChainDeactive(expired.Select(p => p.Key).ToList())];
+    }
+
+    List<byte[]> ChainTickReplies(long now) => ChainExpireReplies(now);
+
+    internal void SetActiveChainSkillForTests(int skillId, long untilMs) => activeChainSkills[skillId] = untilMs;
+
+    internal List<byte[]> ChainCastRepliesForTests(int skillId, long now) => ChainCastReplies(skillId, now);
+
+    IReadOnlyList<int> ContextSkillsForSlot(QuickSlotRecord slot) =>
+        slot.ContextSkills is { Length: >= 4 } ctx ? ctx : data.DefaultContextSkills(slot.SkillId);
+
+    /// <summary>Highest hotbar slot that holds skills; above it the consumable bar (item slots 11-18, F1-F8) starts.</summary>
+    const int MaxSkillQuickSlot = 10;
+
+    /// <summary>
+    /// The skill stacks the player sees: the class's default bar with the saved slots over it (an emptied or item slot
+    /// has none). Index 0 of a stack is the slot's own skill, 1-3 the Skill Order rows below it.
+    /// </summary>
+    Dictionary<int, int[]> EffectiveSkillStacks()
+    {
+        var stacks = new Dictionary<int, int[]>();
+        if (Profile() is { } profile)
+            foreach (var (slot, skill) in profile.DefaultBar())
+                if (skill > 0) stacks[slot] = StackOf(new QuickSlotRecord(slot, 0, 0, 0, skill));
+        foreach (var saved in quickSlots.Values)
+        {
+            if (saved.Type == 0 && saved.SkillId != 0 && saved.Slot < FirstStigmaQuickSlot) stacks[saved.Slot] = StackOf(saved);   // stigma slots 20-23 are not skill stacks
+            else stacks.Remove(saved.Slot);
+        }
+        return stacks;
+    }
+
+    int[] StackOf(QuickSlotRecord slot)
+    {
+        var stack = ContextSkillsForSlot(slot).Take(4).ToArray();
+        if (stack.Length < 4) stack = [.. stack, .. new int[4 - stack.Length]];
+        stack[0] = slot.SkillId;
+        return stack;
+    }
+
+    /// <summary>Allowed ids in a slot's four context rows (class default stack plus the class E-combo / SkillCond stack skills).</summary>
+    HashSet<int> AllowedContextSkillIds(int barSkillId)
+    {
+        var allowed = data.DefaultContextSkills(barSkillId).Where(id => id > 0).ToHashSet();
+        if (Profile() is { Class: var cls })
+        {
+            foreach (var id in data.ESlotComboSkills(cls))
+                if (id > 0) allowed.Add(id);
+        }
+        return allowed;
+    }
+
+    /// <summary>Saved stacks must keep the bar skill at index 0 matching the slot record (context rows may hold any valid skill id).</summary>
+    bool ContextStackValid(int barSkillId, IReadOnlyList<int> stack, IReadOnlySet<int>? barSkills = null)
+    {
+        if (barSkillId <= 0 || stack.Count < 4 || stack[0] != barSkillId) return false;
+        var allowed = AllowedContextSkillIds(barSkillId);
+        return stack.All(id => id == 0 || allowed.Contains(id) || barSkills?.Contains(id) == true);
+    }
+
+    static void ClearSkillIdExcept(Dictionary<int, int[]> stacks, int skillId, int keepSlot, int keepIndex)
+    {
+        if (skillId == 0) return;
+        foreach (var (slot, stack) in stacks)
+        {
+            for (var i = 0; i < 4; i++)
+            {
+                if (slot == keepSlot && i == keepIndex) continue;
+                if (stack[i] == skillId) stack[i] = 0;
+            }
+        }
+    }
+
+    static void DedupeSkillStacks(Dictionary<int, int[]> stacks)
+    {
+        var seen = new HashSet<int>();
+        foreach (var (_, stack) in stacks.OrderBy(p => p.Key))
+        {
+            for (var i = 0; i < 4; i++)
+            {
+                var id = stack[i];
+                if (id == 0) continue;
+                if (!seen.Add(id)) stack[i] = 0;
+            }
+            if (stack[0] == 0 && stack.Any(v => v != 0)) Array.Clear(stack, 0, 4);
+        }
+    }
+
+    /// <summary>Slots the server auto-selected after a SkillCond grant; reverted when that abnormal group expires.</summary>
+    readonly Dictionary<int, (byte ContextIndex, int SkillId, int AbnormalGroup)> contextAutoSelect = [];
+
+    /// <summary>
+    /// Server-pushed 0x5608 (no 0x5607, not persisted): tells the client which context row is active so SkillCond-gated
+    /// skills unlock (Suppressing Arrow after Marking Shot Precision, same pattern as chain self-buff before 0x3818).
+    /// </summary>
+    List<byte[]> NotifyQuickSlotContextSkill(byte slotId, byte contextIndex, int skillId)
+    {
+        if (Profile() is not { } profile) return [];
+        return [QuickSlotContextReply(0, slotId, contextIndex, skillId), Hotbar(profile.DefaultBar())];
+    }
+
+    bool TryContextSlotOfSkill(int skillId, out byte slotId, out byte contextIndex)
+    {
+        slotId = 0;
+        contextIndex = 0;
+        foreach (var (slot, stack) in EffectiveSkillStacks().OrderBy(p => p.Key))
+        {
+            var index = Array.IndexOf(stack, skillId);
+            if (index < 0) continue;
+            slotId = (byte)slot;
+            contextIndex = (byte)index;
+            return true;
+        }
+        return false;
+    }
+
+    /// <summary>After skill_cond_grant (0x382a): select each newly usable conditional skill on the hotbar.</summary>
+    List<byte[]> SkillCondContextSelectReplies(int abnormalGroup)
+    {
+        if (abnormalGroup <= 0) return [];
+        var replies = new List<byte[]>();
+        foreach (var skillId in learned.OrderBy(id => id))
+        {
+            if (data.Skill(skillId) is not { SkillCond.AbnormalGroup: int need } || need != abnormalGroup) continue;
+            if (!TryContextSlotOfSkill(skillId, out var slot, out var index)) continue;
+            contextAutoSelect[slot] = (index, skillId, abnormalGroup);
+            replies.AddRange(NotifyQuickSlotContextSkill(slot, index, skillId));
+        }
+        return replies;
+    }
+
+    /// <summary>
+    /// After the cast target meets a Target SkillCond (e.g. Stagger on NPC/PvP): server 0x5608 selects context rows
+    /// for every learned skill whose <see cref="SkillCondNeed"/> matches, same pattern as self Precision grants.
+    /// </summary>
+    List<byte[]> SkillCondTargetSelectReplies(Func<SkillCondNeed, bool> matches, int contextMarker)
+    {
+        var replies = new List<byte[]>();
+        foreach (var skillId in learned.OrderBy(id => id))
+        {
+            if (data.Skill(skillId) is not { SkillCond: { } cond }) continue;
+            if (!matches(cond)) continue;
+            if (cond.SelectTarget?.Equals("Target", StringComparison.OrdinalIgnoreCase) != true) continue;
+            if (!TryContextSlotOfSkill(skillId, out var slot, out var index)) continue;
+            contextAutoSelect[slot] = (index, skillId, contextMarker);
+            replies.AddRange(NotifyQuickSlotContextSkill(slot, index, skillId));
+        }
+        return replies;
+    }
+
+    static bool TargetSkillCondNeedsAbnormalEffect(SkillCondNeed cond, string effectType) =>
+        cond.Type.Equals("HasAbnormalEffectType", StringComparison.OrdinalIgnoreCase)
+        && cond.AbnormalEffect?.Equals(effectType, StringComparison.OrdinalIgnoreCase) == true;
+
+    /// <summary>Last NPC/player key that opened a target-Stagger context select (hotbar revert when it ends).</summary>
+    int? staggerReactiveTargetKey;
+
+    /// <summary>Target Stagger window: unlock all class rampage/scattershot skills from skill_cond in data.</summary>
+    internal List<byte[]> SkillCondTargetStaggerSelectReplies(int targetKey = 0)
+    {
+        if (targetKey != 0) staggerReactiveTargetKey = targetKey;
+        return SkillCondTargetSelectReplies(c => TargetSkillCondNeedsAbnormalEffect(c, "Stagger"), StaggerGaugeCombat.StaggerAbnormalId);
+    }
+
+    internal List<byte[]> ClearStaggerReactiveContextIfTargetLost(long now)
+    {
+        if (staggerReactiveTargetKey is not int key) return [];
+        var stillStaggered = TargetStaggerActive(key, now);
+        if (stillStaggered != false) return [];
+        staggerReactiveTargetKey = null;
+        return SkillCondStaggerContextExpireReplies();
+    }
+
+    bool? TargetStaggerActive(int targetKey, long now)
+    {
+        if (targetKey >= SharedWorld.FirstPlayerKey)
+        {
+            if (worldPlayer?.Map?.Players.GetValueOrDefault(targetKey)?.Session is not { } victim) return null;
+            return victim.PlayerHasGroggyBreakStagger(now);
+        }
+        if (targets?.TryGetValue(targetKey, out var npc) != true || npc is null) return null;
+        return NpcHasGroggyBreakStagger(targetKey, now);
+    }
+
+    /// <summary>When a target-gated SkillCond window ends, restore context index 0 on auto-selected slots.</summary>
+    List<byte[]> SkillCondTargetContextExpireReplies(int contextMarker)
+    {
+        if (Profile() is null) return [];
+        var replies = new List<byte[]>();
+        foreach (var slot in contextAutoSelect.Keys.Order().ToList())
+        {
+            var (index, skillId, group) = contextAutoSelect[slot];
+            if (group != contextMarker) continue;
+            contextAutoSelect.Remove(slot);
+            if (!EffectiveSkillStacks().TryGetValue(slot, out var stack) || stack[0] <= 0) continue;
+            replies.AddRange(NotifyQuickSlotContextSkill((byte)slot, 0, stack[0]));
+        }
+        return replies;
+    }
+
+    List<byte[]> SkillCondStaggerContextExpireReplies() =>
+        SkillCondTargetContextExpireReplies(StaggerGaugeCombat.StaggerAbnormalId);
+
+    /// <summary>When a gating self-buff expires, restore the bar skill at index 0 on auto-selected slots.</summary>
+    List<byte[]> SkillCondContextExpireReplies(IReadOnlyList<Buff> removed)
+    {
+        if (removed.Count == 0 || Profile() is null) return [];
+        var groups = removed.Select(b => b.Group).Where(g => g > 0).ToHashSet();
+        if (groups.Count == 0) return [];
+        var replies = new List<byte[]>();
+        foreach (var slot in contextAutoSelect.Keys.Order().ToList())
+        {
+            var (index, skillId, group) = contextAutoSelect[slot];
+            if (!groups.Contains(group)) continue;
+            contextAutoSelect.Remove(slot);
+            if (!EffectiveSkillStacks().TryGetValue(slot, out var stack) || stack[0] <= 0) continue;
+            replies.AddRange(NotifyQuickSlotContextSkill((byte)slot, 0, stack[0]));
+        }
+        return replies;
+    }
+
+    bool QuickSlotSkillAllowed(int skillId)
+    {
+        if (skillId == 0 || data.Skill(skillId) is null) return false;
+        if (learned.Contains(skillId)) return true;
+        if (Profile() is not { } profile) return false;
+        foreach (var (_, barSkill) in profile.DefaultBar())
+        {
+            if (barSkill == skillId) return true;
+            if (data.DefaultContextSkills(barSkill).Contains(skillId)) return true;
+        }
+        foreach (var s in quickSlots.Values)
+        {
+            if (s.SkillId == skillId) return true;
+            if (s.ContextSkills?.Contains(skillId) == true) return true;
+        }
+        return data.ESlotComboSkills(profile.Class).Contains(skillId);
+    }
+
+    bool IsAllowedContextSkillEdit(int slotId, int[] target, byte contextSlot, int skillId)
+    {
+        if (skillId == 0) return true;
+        if (!QuickSlotSkillAllowed(skillId)) return false;
+        if (contextSlot == 0)
+        {
+            if (target[0] == 0 || skillId == target[0]) return true;
+            // E-key slot 7: index 0 must stay the class E bar skill (Deadshot on the E slot is repaired at login, not accepted live).
+            if (slotId == 7 && Profile() is { } profile
+                && profile.DefaultBar().FirstOrDefault(s => s.Slot == 7).SkillId is var eBar && eBar > 0 && target[0] == eBar)
+                return false;
+            return true;
+        }
+        return target[0] > 0;
+    }
+
+    /// <summary>
+    /// 0x5608 QuickSlotContextSkillUpdate_RS, OBSERVED (6 instances in the community recordings of 2026-11-05/06, Addiboii/A2Core
+    /// 6714299): presence mask u8, result u16, slot u8, context slot u8, skill i32, then the fields whose bit is set: bit 0 is_swap
+    /// u8, bit 1 swap slot u8, bit 2 swap context slot u8 (a swap on context slot 0 is mask 3). Without the mask the client read
+    /// the slot as the result.
+    /// </summary>
+    static byte[] QuickSlotContextReply(int result, byte slotId, byte contextSlot, int skillId, bool swap = false, byte swapSlot = 0, byte swapContext = 0)
+    {
+        var mask = (byte)(swap ? 3 | (swapContext != 0 ? 4 : 0) : 0);
+        var w = PacketWriter.Opcode(QuickSlotContextSkillRs).U8(mask).U16(result).U8(slotId).U8(contextSlot).I32(skillId);
+        if ((mask & 1) != 0) w.U8(1);
+        if ((mask & 2) != 0) w.U8(swapSlot);
+        if ((mask & 4) != 0) w.U8(swapContext);
+        return w.ToArray();
+    }
+
+    bool BuildQuickSlotContextEdit(Dictionary<int, int[]> before, int slotId, byte contextSlot, int skillId,
+        out Dictionary<int, int[]>? stacks, out bool noOp, out bool swapped, out byte swapSlot, out byte swapContext, out int displaced)
+    {
+        stacks = before.ToDictionary(p => p.Key, p => (int[])p.Value.Clone());
+        noOp = false;
+        swapped = false;
+        swapSlot = swapContext = 0;
+        displaced = 0;
+        if (!stacks.TryGetValue(slotId, out var target))
+        {
+            if (skillId == 0) { noOp = true; stacks = null; return true; }
+            if (contextSlot != 0) return false;
+            target = stacks[slotId] = new int[4];
+        }
+        displaced = target[contextSlot];
+        if (displaced == skillId) { noOp = true; stacks = null; return true; }
+        if (!IsAllowedContextSkillEdit(slotId, target, contextSlot, skillId)) return false;
+        if (skillId != 0)
+        {
+            foreach (var (otherSlot, other) in stacks.OrderBy(p => p.Key != slotId).ThenBy(p => p.Key))
+            {
+                var index = Array.IndexOf(other, skillId);
+                if (index < 0 || ReferenceEquals(other, target) && index == contextSlot) continue;
+                other[index] = displaced;
+                swapped = true;
+                swapSlot = (byte)otherSlot;
+                swapContext = (byte)index;
+                break;
+            }
+        }
+        target[contextSlot] = skillId;
+        ClearSkillIdExcept(stacks, skillId, slotId, contextSlot);
+        foreach (var stack in stacks.Values.Where(st => st[0] == 0)) Array.Clear(stack, 0, 4);
+        return true;
+    }
+
+    /// <summary>
+    /// 0x5607 QuickSlotContextSkillUpdate_RQ {slot u8, context index u8, skill id i32} (OBSERVED live 2026-10-30, 8 bytes:
+    /// `06 01 D008E500` = slot 6, index 1, skill 15010000). The Skill Order window sends every edit as this one request:
+    /// index 0 is the slot's own skill (skill 0 empties the slot, `07 00 00000000`), indexes 1-3 the rows under it. A skill
+    /// already placed elsewhere in the bar swaps with the one it displaces. Answered 0x5608 {result u16, request echo,
+    /// is_swap, swap slot, swap index} in the OBSERVED presence-mask form (<see cref="QuickSlotContextReply"/>), then the bar as 0x5600.
+    /// The stigma quick slots (wire slots 20-23) take the stigma rules (GameSession.Stigmas.cs).
+    /// </summary>
+    async Task<List<byte[]>> UpdateQuickSlotContextAsync(byte[] plain, CancellationToken ct)
+    {
+        if (plain.Length < 8) return [];
+        var slotId = plain[2];
+        var contextSlot = plain[3];
+        var skillId = BitConverter.ToInt32(plain, 4);
+        byte[] Rs(int result, bool swap = false, byte swapSlot = 0, byte swapContext = 0, int swapSkill = 0) =>
+            QuickSlotContextReply(result, slotId, contextSlot, skillId, swap, swapSlot, swapContext);
+        if (slotId is >= FirstStigmaQuickSlot and <= LastStigmaQuickSlot && StigmasOn)
+            return await SetStigmaQuickSlotAsync(slotId, contextSlot, skillId, ct);
+        List<byte[]> Refused()
+        {
+            ConnectionLog?.Invoke($"quick-slot 0x5607 refused: slot {slotId} index {contextSlot} skill {skillId}");
+            return Profile() is { } profile ? [Rs(1), Hotbar(profile.DefaultBar())] : [Rs(1)];
+        }
+        if (contextSlot > 3 || slotId > MaxSkillQuickSlot || skillId < 0 || skillId != 0 && data.Skill(skillId) is null || Profile() is not { } profile)
+            return Refused();
+        if (quickSlots.TryGetValue(slotId, out var occupied) && !IsClearedQuickSlot(occupied) && occupied.Type != 0) return Refused();
+
+        var before = EffectiveSkillStacks().ToDictionary(p => p.Key, p => (int[])p.Value.Clone());
+        if (!BuildQuickSlotContextEdit(before, slotId, contextSlot, skillId, out var stacks, out var noOp, out var swapped, out var swapSlot, out var swapContext, out var displaced))
+            return Refused();
+        if (noOp) return [Rs(0), Hotbar(profile.DefaultBar())];
+
+        var edited = stacks!;
+        var changes = new List<(int Slot, QuickSlotRecord? Record)>();
+        foreach (var number in edited.Keys.Concat(before.Keys).Distinct().Order())
+        {
+            var now = edited.TryGetValue(number, out var stack) ? stack : new int[4];
+            if (before.TryGetValue(number, out var was) && was.SequenceEqual(now)) continue;
+            changes.Add((number, now[0] != 0 ? new QuickSlotRecord(number, 0, 0, 0, now[0], now)
+                : HasDefaultQuickSlot(number) ? new QuickSlotRecord(number, 0, 0, 0, 0, [0, 0, 0, 0]) : null));
+        }
+        if (Store is { } store && CharacterId is { } character)
+        {
+            if (skillId != 0 && data.Skill(skillId) is null) return Refused();
+            var saved = await Stored(async () =>
+            {
+                foreach (var (number, record) in changes)
+                    if (!await store.SaveQuickSlotAsync(character, number, record, ct)) return [];
+                return [[]];
+            });
+            if (saved.Count == 0) return Refused();
+        }
+        foreach (var (number, record) in changes)
+        {
+            if (record is null) quickSlots.Remove(number);
+            else quickSlots[number] = record;
+        }
+        return [Rs(0, swapped, swapSlot, swapContext, swapped ? displaced : 0), Hotbar(profile.DefaultBar())];
+    }
+}

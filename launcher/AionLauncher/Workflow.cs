@@ -344,8 +344,11 @@ sealed class Workflow(ServerEntry server, LauncherSettings settings)
             var steamExe = Path.Combine(steam.Root, "steam.exe");
             if (!File.Exists(steamExe)) throw new LauncherException(LauncherLoc.ErrSteamCopyMissing);
             var startedAt = DateTime.Now;
-            DnsInject.Log($"steam launch: \"{steamExe}\" -applaunch {SteamInstall.AppId}");
-            Process.Start(new ProcessStartInfo(steamExe, $"-applaunch {SteamInstall.AppId}") { UseShellExecute = true });
+            // TEMPORARY diagnostics: extra arguments after -applaunch reach the game. -log opens the UE console and
+            // -abslog writes it to a file, so a stuck world load can be diagnosed from the client side.
+            var launchArgs = $"-applaunch {SteamInstall.AppId} -log -abslog=C:\\AionClient.log";
+            DnsInject.Log($"steam launch: \"{steamExe}\" {launchArgs}");
+            Process.Start(new ProcessStartInfo(steamExe, launchArgs) { UseShellExecute = true });
             for (var attempt = 0; attempt < 240; attempt++)
             {
                 await Task.Delay(500, ct);

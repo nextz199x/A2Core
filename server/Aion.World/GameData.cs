@@ -1,0 +1,1055 @@
+using System.Globalization;
+using System.Text.Json;
+using System.Text.Json.Serialization;
+using Aion.Protocol.Native;
+
+namespace Aion.World;
+
+/// <summary>A creation profile (PCCreationInfo + PcData): class, race, pc ID and default hotbar.</summary>
+public sealed record StarterProfile(
+    [property: JsonPropertyName("pc_id")] int PcId,
+    [property: JsonPropertyName("class")] string Class,
+    [property: JsonPropertyName("race")] int Race,
+    [property: JsonPropertyName("resource")] string Resource,
+    [property: JsonPropertyName("skills")] int[] Skills,
+    [property: JsonPropertyName("slots")] int[][] Slots,
+    [property: JsonPropertyName("bar")] int[][]? Bar = null)
+{
+    /// <summary>
+    /// The skill bar at a level (PCContextSkillSlot): each fixed slot 0-7 shows its default skill
+    /// once learned, so the bar grows with the level instead of staying at the level-one slots.
+    /// </summary>
+    /// <summary>
+    /// The class's default bar, all of it: the official QuickSlotList_NT at a level-1 world entry (capture 20261013 #376)
+    /// places all 8 skills of PCContextSkillSlot, the ones not learned yet too (the client draws them locked).
+    /// </summary>
+    public List<(int Slot, int SkillId)> DefaultBar() => (Bar ?? Slots).Select(s => (s[0], s[1])).ToList();
+}
+
+public sealed record DamageRow(
+    [property: JsonPropertyName("flat")] int?[] Flat,
+    [property: JsonPropertyName("ratio")] int?[] Ratio,
+    [property: JsonPropertyName("pvp")] DamageValues? Pvp,
+    [property: JsonPropertyName("effect_id")] int EffectId,
+    [property: JsonPropertyName("hit_at_ms")] int HitAtMs = 0,
+    // Skill.dat Damage EffectValueList[4] (tools/class_skills.py, build 26262663).
+    [property: JsonPropertyName("value4")] string? Value4 = null,
+    // SkillEffectLvGroupId: flat min/max at skill levels 2+ (GameData.LevelFlat). Null: the same at every level.
+    [property: JsonPropertyName("level_group")] string? LevelGroup = null)
+{
+    /// <summary>
+    /// What this row's damage is divided by: EffectValueList[4] when it reads as a number above 1, else 1.
+    /// OBSERVED for 2 (Rending Blow and Smashing Blow hit about half of a single-row skill per unit of ratio). CANDIDATE above 2.
+    /// </summary>
+    public int HitDivisor => int.TryParse(Value4, out var n) && n > 1 ? n : 1;
+}
+
+public sealed record DamageValues(
+    [property: JsonPropertyName("flat")] int?[] Flat,
+    [property: JsonPropertyName("ratio")] int?[] Ratio);
+
+public sealed record SkillCost(
+    [property: JsonPropertyName("mp")] int Mp,
+    [property: JsonPropertyName("hp")] int Hp,
+    [property: JsonPropertyName("sp")] int Sp,
+    [property: JsonPropertyName("ap")] int Ap = 0);
+
+public sealed record SkillCondNeed(
+    [property: JsonPropertyName("type")] string Type,
+    [property: JsonPropertyName("abnormal_group")] int? AbnormalGroup = null,
+    [property: JsonPropertyName("abnormal_effect")] string? AbnormalEffect = null,
+    [property: JsonPropertyName("select_target")] string? SelectTarget = null);
+
+public sealed record SkillCondGrant(
+    [property: JsonPropertyName("abnormal")] int Abnormal,
+    [property: JsonPropertyName("duration_ms")] int DurationMs,
+    [property: JsonPropertyName("select_target")] string? SelectTarget = null);
+
+/// <summary>Skill.dat CanUseSkillCostType + CanUseSkillCostValue (ratio thresholds are permille of max).</summary>
+public sealed record SkillResourceCondition(
+    [property: JsonPropertyName("type")] string Type,
+    [property: JsonPropertyName("value")] int Value);
+
+/// <summary>One hold-charge tier (min hold before this step); populated when SkillCharging*.dat is exported.</summary>
+public sealed record SkillHoldChargeLevel(
+    [property: JsonPropertyName("min_hold_ms")] int MinHoldMs,
+    [property: JsonPropertyName("damage_row")] int DamageRow = -1);
+
+/// <summary>Optional hold-charge metadata on a skill; absent rows imply damage-row stages and <see cref="GameSession.SkillChargeMaxHoldMs"/>.</summary>
+public sealed record SkillHoldCharge(
+    [property: JsonPropertyName("max_hold_ms")] int? MaxHoldMs = null,
+    [property: JsonPropertyName("levels")] SkillHoldChargeLevel[]? Levels = null);
+
+/// <summary>Cast data of a skill (Skill.dat): cost, cooldown, weapon requirement and Damage rows.</summary>
+public sealed record SkillDefinition(
+    [property: JsonPropertyName("name")] string? Name,
+    [property: JsonPropertyName("type")] string Type,
+    [property: JsonPropertyName("target")] string? Target,
+    [property: JsonPropertyName("weapons")] string[] Weapons,
+    [property: JsonPropertyName("cooldown_ms")] int CooldownMs,
+    [property: JsonPropertyName("cost")] SkillCost Cost,
+    [property: JsonPropertyName("damage")] DamageRow[] Damage,
+    [property: JsonPropertyName("casting_ms")] int CastingMs = 0,
+    [property: JsonPropertyName("chain_prev")] int ChainPrev = 0,
+    [property: JsonPropertyName("chain_rate")] int ChainRate = 0,
+    [property: JsonPropertyName("chain_window_ms")] int ChainWindowMs = 0,
+    [property: JsonPropertyName("chain_deactivate")] string? ChainDeactivate = null,
+    [property: JsonPropertyName("context_register")] string? ContextRegister = null,
+    [property: JsonPropertyName("group_cooldown_id")] int GroupCooldownId = 0,
+    [property: JsonPropertyName("chain_next")] int[]? ChainNext = null,
+    [property: JsonPropertyName("sealstone")] int? SealStone = null,
+    [property: JsonPropertyName("needs_spirit")] string[]? NeedsSpirit = null,
+    [property: JsonPropertyName("needs_peace")] bool NeedsPeace = false,
+    [property: JsonPropertyName("needs_resource")] SkillResourceCondition? NeedsResource = null,
+    [property: JsonPropertyName("use_condition_source")] string? UseConditionSource = null,
+    [property: JsonPropertyName("skill_cond")] SkillCondNeed? SkillCond = null,
+    [property: JsonPropertyName("skill_cond_source")] string? SkillCondSource = null,
+    [property: JsonPropertyName("skill_cond_grant")] SkillCondGrant? SkillCondGrant = null,
+    [property: JsonPropertyName("skill_cond_grant_source")] string? SkillCondGrantSource = null,
+    [property: JsonPropertyName("stagger_gauge")] int StaggerGauge = 0,
+    [property: JsonPropertyName("stagger_gauge_source")] string? StaggerGaugeSource = null,
+    /// <summary>Skill.dat NeedSkillUseRange (cm); may also come from skill-cast-ranges.json overlay.</summary>
+    [property: JsonPropertyName("range")] double UseRangeCm = 0,
+    // Skill end (0x3806) after its start at attack speed 10000, before the 50 ms rounding (Combat.SkillEndMs).
+    // Design act EndureEnd / container PlayRate; 0 ends at once; null keeps the swing-end schedule (GameSession.SkillEnd).
+    [property: JsonPropertyName("end_ms")] double? EndMs = null,
+    // SkillLv.dat NeedCoolTime at skill levels 2, 3, ... when it differs from level 1.
+    [property: JsonPropertyName("cooldown_levels")] int[]? CooldownLevels = null,
+    [property: JsonPropertyName("hold_charge")] SkillHoldCharge? HoldCharge = null)
+{
+    /// <summary>Cooldown at a skill level: SkillLv.dat when level 2+ lists one (level N uses row N, CANDIDATE), else <see cref="CooldownMs"/>.</summary>
+    public int CooldownAt(int skillLevel) =>
+        skillLevel >= 2 && CooldownLevels is { Length: > 0 } levels ? levels[Math.Min(skillLevel - 2, levels.Length - 1)] : CooldownMs;
+}
+
+public sealed record WeaponStats(
+    [property: JsonPropertyName("min")] int Min,
+    [property: JsonPropertyName("max")] int Max,
+    [property: JsonPropertyName("critical")] int Critical,
+    [property: JsonPropertyName("accuracy")] int Accuracy);
+
+/// <summary>An equippable item (tools/item_data.py): EquipCategory, ItemLevel, PermitLevelMin, ItemRace (0 all), fixed MainStats and optional SubStats roll rows.</summary>
+public sealed record ItemInfo(
+    [property: JsonPropertyName("c")] string Category,
+    [property: JsonPropertyName("l")] int Level,
+    [property: JsonPropertyName("p")] int PermitLevel,
+    [property: JsonPropertyName("r")] int Race,
+    [property: JsonPropertyName("s")] Dictionary<string, int> Stats,
+    [property: JsonPropertyName("u")] string[][]? SubstatRollTable = null,
+    [property: JsonPropertyName("k")] int DecomposeSkin = 0)
+{
+    public int Stat(string name) => Stats.GetValueOrDefault(name);
+
+    /// <summary>Weighted SubStats rows: stat name, min, max, random weight.</summary>
+    public IReadOnlyList<(string Stat, int Min, int Max, int Weight)> SubstatRolls() =>
+        SubstatRollTable is null ? [] : SubstatRollTable.Where(r => r.Length > 0).Select(r =>
+            (r[0], r.Length > 1 && int.TryParse(r[1], out var lo) ? lo : 0,
+                r.Length > 2 && int.TryParse(r[2], out var hi) ? hi : 0,
+                r.Length > 3 && int.TryParse(r[3], out var w) ? w : 1)).ToList();
+}
+
+public sealed record ClassRules(
+    [property: JsonPropertyName("weapon_type")] string? WeaponType,
+    [property: JsonPropertyName("starter_weapons")] Dictionary<string, int> StarterWeapons,
+    [property: JsonPropertyName("unlocks")] int[][] Unlocks);
+
+public sealed record NpcSpawn(
+    [property: JsonPropertyName("name")] string Name,
+    [property: JsonPropertyName("npc_id")] int NpcId,
+    [property: JsonPropertyName("level")] int Level,
+    [property: JsonPropertyName("relationship")] int Relationship,
+    [property: JsonPropertyName("aggressive")] bool Aggressive,
+    [property: JsonPropertyName("walk_speed")] double WalkSpeed,
+    [property: JsonPropertyName("run_speed")] double RunSpeed,
+    [property: JsonPropertyName("radius")] int Radius,
+    [property: JsonPropertyName("function")] string Function,
+    [property: JsonPropertyName("position")] double[] Position,
+    [property: JsonPropertyName("yaw")] double Yaw,
+    [property: JsonPropertyName("aggro_type")] string AggroType = "None",
+    [property: JsonPropertyName("aggro")] AggroShape? Aggro = null,
+    [property: JsonPropertyName("skills")] int[]? Skills = null,
+    [property: JsonPropertyName("height")] int Height = 0,
+    [property: JsonPropertyName("no_rotation")] bool NoRotation = false,
+    uint UniqueKey = 0, int SocialAction = 0, NpcRoute? Route = null, string SubType = "NormalMonster", int Grade = 3, bool Air = false, int HpMax = 0,
+    [property: JsonPropertyName("groggy_guard_max")] int GroggyGuardMax = 0,
+    [property: JsonPropertyName("untouchable")] bool Untouchable = false,
+    // NpcData bHitCountBased: every hit removes 1 HP and hp_max is that hit count.
+    bool HitCount = false);
+
+/// <summary>
+/// A MapData waypoint set an NPC walks (tools/world_npcs.py routes): points, Circular / TwoWay / OneWay, walk or run.
+/// The official patrol walks it at its NpcData walk speed without pausing (research/local/npc-behaviour-20261017).
+/// </summary>
+public sealed record NpcRoute(
+    [property: JsonPropertyName("name")] string Name,
+    [property: JsonPropertyName("points")] double[][] Points,
+    [property: JsonPropertyName("traverse")] string Traverse,
+    [property: JsonPropertyName("run")] bool Run);
+
+/// <summary>NpcAggroData: Circle, or ArcCircle (Angle degrees centred on the facing, plus an all-round InnerRadius); Height above the NPC.</summary>
+public sealed record AggroShape(
+    [property: JsonPropertyName("shape")] string Shape,
+    [property: JsonPropertyName("radius")] double Radius,
+    [property: JsonPropertyName("angle")] double Angle,
+    [property: JsonPropertyName("inner")] double Inner,
+    [property: JsonPropertyName("height")] double Height,
+    [property: JsonPropertyName("z")] string ZAxis);
+
+/// <summary>An NPC skill (Skill.dat + its SkillEffect damage row): ranges in units, times in ms, damage range in 1/10000.</summary>
+public sealed record NpcSkill(
+    [property: JsonPropertyName("range")] double Range,
+    [property: JsonPropertyName("follow")] double Follow,
+    [property: JsonPropertyName("cooldown")] int Cooldown,
+    [property: JsonPropertyName("cast")] int Cast,
+    [property: JsonPropertyName("effect")] int Effect,
+    [property: JsonPropertyName("damage_min")] int DamageMin,
+    [property: JsonPropertyName("damage_max")] int DamageMax);
+
+/// <summary>One timed damage row of an NPC skill (tools/world_npcs.py skill_hits catalog).</summary>
+public sealed record NpcSkillHitRow(
+    [property: JsonPropertyName("effect")] int Effect,
+    [property: JsonPropertyName("projectile_id")] int Projectile = 0,
+    [property: JsonPropertyName("groggy")] int Groggy = 0);
+
+/// <summary>
+/// The tracked summaries in tools/data (embedded): creation profiles, class skill kits that
+/// follow level (server policy, see tools/class_skills.py), per-level class stats and the map
+/// NPC spawns. Port of the Python lookups.
+/// </summary>
+public sealed class GameData
+{
+    sealed record ClassFile(
+        [property: JsonPropertyName("levels")] Dictionary<string, int[][]>? Levels,
+        [property: JsonPropertyName("max_level")] int MaxLevel,
+        [property: JsonPropertyName("stats")] Dictionary<string, Dictionary<string, Dictionary<string, int>>> Stats,
+        [property: JsonPropertyName("weapon_stats")] Dictionary<string, WeaponStats> WeaponStats,
+        [property: JsonPropertyName("classes")] Dictionary<string, ClassRules> Classes,
+        [property: JsonPropertyName("common_unlocks")] int[][] CommonUnlocks,
+        [property: JsonPropertyName("skills")] Dictionary<string, SkillDefinition> Skills,
+        [property: JsonPropertyName("skill_customizing")] Dictionary<string, int[][]>? SkillCustomizing = null,
+        [property: JsonPropertyName("e_combo_stacks")] Dictionary<string, int[]>? EComboStacks = null,
+        [property: JsonPropertyName("bar_context_by_default_skill")] Dictionary<string, int[]>? BarContextByDefaultSkill = null,
+        // SkillEffectLvGroupId -> [flat min, flat max, pvp flat min, pvp flat max] for skill levels 2, 3, ...
+        [property: JsonPropertyName("effect_levels")] Dictionary<string, int[][]>? EffectLevels = null);
+
+    /// <summary>An NpcData template of the compact world-npcs.json (every field of a spawn but where it stands).</summary>
+    sealed record NpcTemplate(
+        [property: JsonPropertyName("level")] int Level,
+        [property: JsonPropertyName("relationship")] int Relationship,
+        [property: JsonPropertyName("aggressive")] bool Aggressive,
+        [property: JsonPropertyName("walk_speed")] double WalkSpeed,
+        [property: JsonPropertyName("run_speed")] double RunSpeed,
+        [property: JsonPropertyName("radius")] int Radius,
+        [property: JsonPropertyName("function")] string Function,
+        [property: JsonPropertyName("aggro_type")] string AggroType = "None",
+        [property: JsonPropertyName("aggro")] AggroShape? Aggro = null,
+        [property: JsonPropertyName("skills")] int[]? Skills = null,
+        [property: JsonPropertyName("height")] int Height = 0,
+        [property: JsonPropertyName("no_rotation")] bool NoRotation = false,
+        [property: JsonPropertyName("sub_type")] string SubType = "NormalMonster",
+        [property: JsonPropertyName("grade")] int Grade = 3,
+        [property: JsonPropertyName("air")] bool Air = false,
+        [property: JsonPropertyName("hp_max")] int HpMax = 0,
+        [property: JsonPropertyName("groggy_guard_max")] int GroggyGuardMax = 0,
+        // NpcData bCanBeAttacked false or NpcTargetAble not Able (tools/world_npcs.py untouchable, build 26262663).
+        [property: JsonPropertyName("untouchable")] bool Untouchable = false,
+        // NpcData bHitCountBased: every hit takes 1 HP; hp_max is the hit count (7 monsters, 5 summons).
+        [property: JsonPropertyName("hit_count")] bool HitCount = false);
+
+    /// <summary>world-npcs.json: templates by NpcData ID and spawns [name, npc_id, x, y, z, yaw] per map (tools/world_npcs.py).</summary>
+    sealed record NpcFile([property: JsonPropertyName("maps")] Dictionary<string, JsonElement[][]> Maps,
+        [property: JsonPropertyName("templates")] Dictionary<string, NpcTemplate> Templates,
+        [property: JsonPropertyName("npc_skills")] Dictionary<string, NpcSkill>? Skills = null,
+        [property: JsonPropertyName("skill_hits")] Dictionary<string, NpcSkillHitRow[]>? SkillHits = null,
+        [property: JsonPropertyName("routes")] Dictionary<string, NpcRoute[]>? Routes = null);
+
+    readonly Dictionary<string, StarterProfile> profiles;
+    readonly ClassFile classes;
+    readonly NpcFile npcs;
+
+    sealed record ItemFile([property: JsonPropertyName("items")] Dictionary<string, ItemInfo> Items);
+    sealed record LevelFile([property: JsonPropertyName("need")] Dictionary<string, long> Need,
+        [property: JsonPropertyName("skill_points")] Dictionary<string, int>? SkillPoints = null);
+
+    static readonly Lazy<LevelFile> levels = new(() => Load<LevelFile>("levels.json"));
+
+    sealed record ResurrectLevelRow([property: JsonPropertyName("max_level")] int MaxLevel, [property: JsonPropertyName("wait_sec")] int WaitSec);
+    sealed record ResurrectFile(
+        [property: JsonPropertyName("auto_resurrect_sec")] int AutoResurrectSec,
+        [property: JsonPropertyName("default_wait_sec_by_max_level")] ResurrectLevelRow[]? DefaultWaitSecByMaxLevel = null);
+
+    static readonly Lazy<ResurrectFile> resurrect = new(() => Load<ResurrectFile>("resurrect.json"));
+
+    sealed record FieldBossFile([property: JsonPropertyName("bosses")] int[][] Bosses);
+
+    static readonly Lazy<IReadOnlyList<(int Code, int MapId, int NpcId)>> fieldBosses = new(() =>
+        [.. Load<FieldBossFile>("field-bosses.json").Bosses.Where(b => b.Length >= 3).Select(b => (b[0], b[1], b[2]))]);
+
+    /// <summary>
+    /// The client's WorldMapFieldNamed field bosses the server spawns: code (_data_id), map, NpcData id
+    /// (tools/field_bosses.py; ported from KiskEmu, AGPL-3.0, commit d54d69472d).
+    /// </summary>
+    public IReadOnlyList<(int Code, int MapId, int NpcId)> FieldBosses => fieldBosses.Value;
+
+    /// <summary>AFK auto-resurrection delay in seconds (Resurrect.dat / guidebooks: 900 s on global).</summary>
+    public int AutoResurrectSec => Math.Max(1, resurrect.Value.AutoResurrectSec);
+
+    /// <summary>AFK auto-resurrection delay (Resurrect.dat / guidebooks: 900 s on global).</summary>
+    public int AutoResurrectMs(int level) => AutoResurrectSec * 1000;
+
+    /// <summary>Default-resurrection button wait in seconds (0 = immediate click).</summary>
+    public int DefaultResurrectWaitSec(int level) => DefaultResurrectWaitMs(level) / 1000;
+
+    /// <summary>Default-resurrection button wait by level (0 = immediate click; client also reads local dat).</summary>
+    public int DefaultResurrectWaitMs(int level)
+    {
+        var rows = resurrect.Value.DefaultWaitSecByMaxLevel;
+        if (rows is null or { Length: 0 }) return 0;
+        foreach (var row in rows.OrderBy(r => r.MaxLevel))
+            if (level <= row.MaxLevel) return Math.Max(0, row.WaitSec) * 1000;
+        return 0;
+    }
+
+    /// <summary>Experience from a level to the next (Exp.dat NeedExp; experience is held per level). 0 when unknown.</summary>
+    public long NeedExp(int level) => levels.Value.Need.GetValueOrDefault(level.ToString(System.Globalization.CultureInfo.InvariantCulture));
+
+    /// <summary>
+    /// The skill points a character of the level has in all (Exp.dat BonusSkillPoint, cumulative; CANDIDATE). The table stops
+    /// growing at <see cref="SkillPointLevelCap"/> (45: 203 points); every higher level, also those past the exported rows
+    /// (the live cap goes to 100), keeps that total.
+    /// </summary>
+    public int SkillPoints(int level) =>
+        level < 1 ? 0 : levels.Value.SkillPoints?.GetValueOrDefault(Math.Min(level, SkillPointLevelCap).ToString(System.Globalization.CultureInfo.InvariantCulture)) ?? 0;
+
+    /// <summary>The lowest character level whose skill point total is the highest of the table (45).</summary>
+    public int SkillPointLevelCap => skillPointCap.Value;
+
+    static readonly Lazy<int> skillPointCap = new(() =>
+    {
+        var table = levels.Value.SkillPoints;
+        if (table is not { Count: > 0 }) return 0;
+        var best = table.Values.Max();
+        return table.Where(row => row.Value == best).Min(row => int.Parse(row.Key, System.Globalization.CultureInfo.InvariantCulture));
+    });
+
+    /// <summary>A skill level bought with skill points (SkillAcquireData Mastery rows): its cost and the character level it needs; null when the level is not buyable.</summary>
+    public (int Cost, int NeedLevel)? SkillLevelCost(int skillId, int level) =>
+        classes.Levels?.GetValueOrDefault(skillId.ToString(System.Globalization.CultureInfo.InvariantCulture))?.FirstOrDefault(row => row.Length >= 3 && row[0] == level) is { } found
+            ? (found[1], found[2]) : null;
+
+    /// <summary>Whether SkillAcquireData lists mastery levels (2+) for this skill id; chain-only ids inherit levels without their own rows.</summary>
+    public bool HasPurchasableMasteryLevels(int skillId) =>
+        classes.Levels?.GetValueOrDefault(skillId.ToString(System.Globalization.CultureInfo.InvariantCulture)) is { } rows
+        && rows.Any(row => row.Length >= 3 && row[0] >= 2);
+
+    readonly Dictionary<string, ItemInfo> items;
+
+    sealed record BaseFile([property: JsonPropertyName("bases")] Dictionary<string, int> Bases);
+    sealed record PointFile([property: JsonPropertyName("maps")] Dictionary<string, Dictionary<string, double[]>> Maps,
+        [property: JsonPropertyName("registered")] int[]? Registered = null);
+
+    static readonly Lazy<HashSet<int>> registeredMaps = new(() => [.. Load<PointFile>("map-points.json").Registered ?? []]);
+
+    /// <summary>Whether the client registers the map (Map.dat). Loading any other map logs the client out (live 2026-10-16: map 80).</summary>
+    public bool KnownMap(int mapId) => registeredMaps.Value.Count == 0 || registeredMaps.Value.Contains(mapId);
+    sealed record DevMenuFile([property: JsonPropertyName("buttons")] Dictionary<string, string[]> Buttons);
+
+    readonly Dictionary<string, int> mapBases;
+    readonly Dictionary<string, Dictionary<string, double[]>> mapPoints;
+    readonly Dictionary<string, string[]> devMenu;
+    readonly int levelCap;
+
+    GameData(Dictionary<string, StarterProfile> profiles, ClassFile classes, NpcFile npcs, Dictionary<string, int>? mapBases = null,
+        Dictionary<string, Dictionary<string, double[]>>? mapPoints = null, Dictionary<string, string[]>? devMenu = null,
+        Dictionary<string, ItemInfo>? items = null, int levelCap = 0)
+    {
+        this.items = items ?? [];
+        this.profiles = profiles;
+        this.classes = classes;
+        this.npcs = npcs;
+        this.mapBases = mapBases ?? [];
+        this.mapPoints = mapPoints ?? [];
+        this.devMenu = new Dictionary<string, string[]>(devMenu ?? [], StringComparer.OrdinalIgnoreCase);
+        this.levelCap = levelCap;
+    }
+
+    sealed record CastRangeFile([property: JsonPropertyName("skills")] Dictionary<string, double>? Skills);
+
+    static readonly Lazy<Dictionary<string, double>> skillCastRanges = new(() =>
+    {
+        try
+        {
+            var file = Load<CastRangeFile>("skill-cast-ranges.json");
+            return file.Skills ?? [];
+        }
+        catch (InvalidOperationException)
+        {
+            return [];
+        }
+    });
+
+    static readonly Lazy<GameData> embedded = new(() => new GameData(
+        Load<Dictionary<string, StarterProfile>>("starter-skills.json"), Load<ClassFile>("class-skills.json"), Load<NpcFile>("world-npcs.json"),
+        Load<BaseFile>("map-bases.json").Bases, Load<PointFile>("map-points.json").Maps, Load<DevMenuFile>("dev-menu.json").Buttons,
+        Load<ItemFile>("items.json").Items));
+
+    /// <summary>A map's named teleport points (MapData TeleportDataMap: *_Home, *_Respawn, *_Start, ...).</summary>
+    public IReadOnlyDictionary<string, double[]> MapPoints(int mapId) =>
+        mapPoints.GetValueOrDefault(mapId.ToString(System.Globalization.CultureInfo.InvariantCulture)) ?? [];
+
+    /// <summary>Where MoveMap puts a character: a *_Start point, else *_Home, else *_Respawn, else the first (tools/map_points.py).</summary>
+    public (string Name, Vector3d Position)? MapStart(int mapId)
+    {
+        var points = MapPoints(mapId);
+        foreach (var word in new[] { "start", "home", "respawn" })
+            foreach (var (name, p) in points)
+                if (name.ToLowerInvariant().Split('_').Contains(word)) return (name, new Vector3d(p[0], p[1], p[2]));
+        return points.Select(kv => ((string, Vector3d)?)(kv.Key, new Vector3d(kv.Value[0], kv.Value[1], kv.Value[2]))).FirstOrDefault();
+    }
+
+    /// <summary>The map's TeleportData *_Respawn point (death respawn), preferring the race's Light/Dark name when present.</summary>
+    public Vector3d? MapRespawn(int mapId, int race)
+    {
+        var points = MapPoints(mapId);
+        var raceWord = race == 2 ? "Dark" : "Light";
+        var respawns = points.Where(p => p.Key.EndsWith("_Respawn", StringComparison.OrdinalIgnoreCase)).ToList();
+        if (respawns.Count == 0) return null;
+        foreach (var (name, p) in respawns.OrderByDescending(n => n.Key.Contains(raceWord, StringComparison.OrdinalIgnoreCase)).ThenBy(n => n.Key, StringComparer.Ordinal))
+            return new Vector3d(p[0], p[1], p[2]);
+        return null;
+    }
+
+    /// <summary>Named destinations: MapData teleport points and the dev menu's "teleport map x y z" buttons, as (name, map, position).</summary>
+    public IEnumerable<(string Name, int MapId, Vector3d Position)> Destinations()
+    {
+        foreach (var (map, points) in mapPoints)
+            foreach (var (name, p) in points)
+                yield return (name, int.Parse(map, System.Globalization.CultureInfo.InvariantCulture), new Vector3d(p[0], p[1], p[2]));
+        foreach (var (name, lines) in devMenu)
+            if (lines.Length == 1 && lines[0].Split(' ', StringSplitOptions.RemoveEmptyEntries) is [var verb, var map, var x, var y, var z]
+                && verb.Equals("teleport", StringComparison.OrdinalIgnoreCase)
+                && int.TryParse(map, System.Globalization.CultureInfo.InvariantCulture, out var mapId)
+                && double.TryParse(x, System.Globalization.CultureInfo.InvariantCulture, out var px)
+                && double.TryParse(y, System.Globalization.CultureInfo.InvariantCulture, out var py)
+                && double.TryParse(z, System.Globalization.CultureInfo.InvariantCulture, out var pz))
+                yield return (name, mapId, new Vector3d(px, py, pz));
+    }
+
+    /// <summary>A dev menu button's server command lines (DevTeleportDataTable, "s ..." lines), or null.</summary>
+    public IReadOnlyList<string>? DevButton(string name) => devMenu.GetValueOrDefault(name);
+
+    public IEnumerable<string> DevButtonNames => devMenu.Keys;
+
+    /// <summary>The map whose terrain and navigation mesh a map uses: its Map.dat BaseMapId (instance layers), else itself.</summary>
+    public int GeometryMap(int mapId) =>
+        mapBases.TryGetValue(mapId.ToString(System.Globalization.CultureInfo.InvariantCulture), out var baseMap) && baseMap > 0 ? baseMap : mapId;
+
+    public static GameData Embedded => embedded.Value;
+
+    /// <summary>Same embedded tables with a configured live level cap (≤ <see cref="TableMaxLevel"/>).</summary>
+    public GameData WithLevelCap(int cap)
+    {
+        if (cap < 1 || cap > classes.MaxLevel) throw new ArgumentOutOfRangeException(nameof(cap));
+        return new GameData(profiles, classes, npcs, mapBases, mapPoints, devMenu, items, cap);
+    }
+
+    static T Load<T>(string name)
+    {
+        using var stream = typeof(GameData).Assembly.GetManifestResourceStream(name)
+            ?? throw new InvalidOperationException($"Missing embedded game data {name}");
+        return JsonSerializer.Deserialize<T>(stream) ?? throw new InvalidOperationException($"Empty game data {name}");
+    }
+
+    /// <summary>PcStatLevel / class-skills.json highest level (tables kept through 100).</summary>
+    public int TableMaxLevel => classes.MaxLevel;
+
+    /// <summary>Effective character cap: configured <see cref="levelCap"/> when set, else the full table.</summary>
+    public int MaxLevel => levelCap > 0 ? Math.Min(levelCap, TableMaxLevel) : TableMaxLevel;
+
+    public int ClampLevel(int level) => Math.Clamp(level, 1, MaxLevel);
+
+    /// <summary>The E-key skill of every class: PCContextSkillSlot QuickSlotId 8 (bar slot 7).</summary>
+    public IReadOnlySet<int> ESlotSkills => eSlotSkills ??= profiles.Values
+        .SelectMany(p => p.DefaultBar().Where(s => s.Slot == 7).Select(s => s.SkillId)).Where(id => id > 0).ToHashSet();
+    HashSet<int>? eSlotSkills;
+
+    /// <summary>Wire slot 7 skill id -> the class's E-key priority stack (QuickSlotInfo context skills, not ChainSkill*).</summary>
+    IReadOnlyDictionary<int, int[]> ESlotComboByBarSkill => eSlotComboByBarSkill ??= BuildESlotComboMap();
+    Dictionary<int, int[]>? eSlotComboByBarSkill;
+
+    /// <summary>PCContextSkillSlot DefaultSkillId -> ContextChangeSkillList (cooldown-rotation stacks, not ChainSkill*).</summary>
+    IReadOnlyDictionary<int, int[]> BarContextByDefaultSkill => barContextByDefaultSkill ??= BuildBarContextMap();
+    Dictionary<int, int[]>? barContextByDefaultSkill;
+
+    Dictionary<int, int[]> BuildBarContextMap()
+    {
+        var raw = classes.BarContextByDefaultSkill;
+        if (raw is null || raw.Count == 0) return [];
+        var map = new Dictionary<int, int[]>();
+        foreach (var (key, stack) in raw)
+            if (int.TryParse(key, System.Globalization.NumberStyles.Integer, System.Globalization.CultureInfo.InvariantCulture, out var skillId)
+                && skillId > 0 && stack is { Length: > 0 })
+                map[skillId] = stack;
+        return map;
+    }
+
+    Dictionary<int, int[]> BuildESlotComboMap()
+    {
+        var stacks = classes.EComboStacks;
+        if (stacks is null || stacks.Count == 0) return [];
+        var map = new Dictionary<int, int[]>();
+        foreach (var cls in stacks.Keys)
+        {
+            var profile = profiles.Values.FirstOrDefault(p => p.Class == cls);
+            if (profile is null) continue;
+            var barSkill = profile.DefaultBar().FirstOrDefault(s => s.Slot == 7).SkillId;
+            if (barSkill <= 0) continue;
+            map[barSkill] = stacks[cls];
+        }
+        return map;
+    }
+
+    /// <summary>The E-key combo stack for a class, or null when only the bar skill is used.</summary>
+    public IReadOnlyList<int>? ESlotComboStack(string className) =>
+        classes.EComboStacks?.GetValueOrDefault(className);
+
+    /// <summary>
+    /// First E-key context skill the client would cast: walk the slot stack in hotbar order and skip skills that are
+    /// not learned yet or still grey (SkillCond / spirit requirement), same as the client's priority walk.
+    /// </summary>
+    public int? FirstLearnedESlotComboSkill(string className, int level)
+    {
+        var profile = profiles.Values.FirstOrDefault(p => p.Class == className);
+        if (profile is null) return null;
+        var barSkill = profile.DefaultBar().FirstOrDefault(s => s.Slot == 7).SkillId;
+        if (barSkill <= 0) return null;
+        var known = LearnedSkills(className, level).Select(k => k.SkillId).ToHashSet();
+        foreach (var id in DefaultContextSkills(barSkill))
+        {
+            if (id <= 0 || !known.Contains(id)) continue;
+            if (Skill(id) is not { } def) continue;
+            if (def.SkillCond is not null) continue;
+            if (def.NeedsSpirit is { Length: > 0 }) continue;
+            return id;
+        }
+        return known.Contains(barSkill) ? barSkill : null;
+    }
+
+    /// <summary>Every skill id that may be cast from the E-key stack for this class.</summary>
+    public IReadOnlySet<int> ESlotComboSkills(string className) =>
+        classes.EComboStacks?.GetValueOrDefault(className) is { } stack ? stack.ToHashSet() : [];
+
+    /// <summary>Playable PCCreationInfo ids per race: 1–8 Elyos, 9–16 Asmodian (same class order as table-000).</summary>
+    public const int PlayableClassesPerRace = 8;
+
+    /// <summary>
+    /// The client often sends the Elyos creation id (1–8) for a class even on an Asmodian account; map to 9–16 when
+    /// the account race is known (PCCreationInfo is per race, not a shared class index).
+    /// </summary>
+    public int NormalizeCreationId(int creationId, int? accountRace)
+    {
+        // The client sends Elyos PCCreationInfo ids (1–8) for class pick even on Asmodian accounts; Dark ids are 9–16.
+        if (accountRace == 2 && creationId is >= 1 and <= PlayableClassesPerRace)
+        {
+            var asmodian = creationId + PlayableClassesPerRace;
+            if (profiles.ContainsKey($"{asmodian}:1")) return asmodian;
+        }
+        return creationId;
+    }
+
+    public StarterProfile? Profile(int creationId, int gender, int? accountRace = null) =>
+        profiles.GetValueOrDefault($"{NormalizeCreationId(creationId, accountRace)}:{gender}");
+
+    /// <summary>Enabled starter row for race/gender/class (ignores creation_id when kit drifted).</summary>
+    public StarterProfile? ProfileForClass(int race, int gender, string className)
+    {
+        foreach (var (key, profile) in profiles)
+        {
+            if (profile.Race != race || !string.Equals(profile.Class, className, StringComparison.OrdinalIgnoreCase)) continue;
+            if (int.Parse(key.Split(':')[1], CultureInfo.InvariantCulture) != gender) continue;
+            return profile;
+        }
+        return null;
+    }
+
+    /// <summary>PC skill id prefix (11–18) → class name (matches tools/skill_audit.py).</summary>
+    static readonly Dictionary<int, string> SkillFamilyClass = new()
+    {
+        [11] = "Gladiator", [12] = "Templar", [13] = "Assassin", [14] = "Ranger",
+        [15] = "Sorcerer", [16] = "Elementalist", [17] = "Cleric", [18] = "Chanter",
+    };
+
+    static int PlayableClassScore(IEnumerable<int> skillIds, string className)
+    {
+        var family = className switch
+        {
+            "Gladiator" => 11, "Templar" => 12, "Assassin" => 13, "Ranger" => 14,
+            "Sorcerer" => 15, "Elementalist" => 16, "Cleric" => 17, "Chanter" => 18,
+            _ => 0,
+        };
+        if (family == 0) return 0;
+        return skillIds.Count(id => id / 1_000_000 == family);
+    }
+
+    /// <summary>Infer class from stored character_skills kit (dominant 11–18 skill family).</summary>
+    public string? InferPlayableClassFromSkills(IEnumerable<int> skillIds)
+    {
+        var counts = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
+        foreach (var id in skillIds)
+        {
+            if (id is < 11_000_000 or >= 19_000_000) continue;
+            if (!SkillFamilyClass.TryGetValue(id / 1_000_000, out var cls)) continue;
+            counts[cls] = counts.GetValueOrDefault(cls) + 1;
+        }
+        if (counts.Count == 0) return null;
+        return counts.OrderByDescending(p => p.Value).ThenBy(p => p.Key, StringComparer.Ordinal).First().Key;
+    }
+
+    /// <summary>
+    /// Playable class for skills/stats/Daevanion: starter profile from creation_id, unless persisted skills
+    /// clearly belong to another class (live client creation_id vs PCCreationInfo drift).
+    /// </summary>
+    public string? ResolvePlayableClass(int creationId, int gender, IEnumerable<int> skillIds)
+    {
+        var profile = Profile(creationId, gender);
+        if (profile is null) return InferPlayableClassFromSkills(skillIds);
+        var ids = skillIds as IReadOnlyCollection<int> ?? skillIds.ToList();
+        var inferred = InferPlayableClassFromSkills(ids);
+        if (inferred is null) return profile.Class;
+        if (string.Equals(inferred, profile.Class, StringComparison.OrdinalIgnoreCase)) return profile.Class;
+        var inferredScore = PlayableClassScore(ids, inferred);
+        var profileScore = PlayableClassScore(ids, profile.Class);
+        return inferredScore > profileScore ? inferred : profile.Class;
+    }
+
+    /// <summary>Skills known at a level: (skill, highest skill level), sorted by skill ID.</summary>
+    public IReadOnlyList<(int SkillId, int Level)> LearnedSkills(string className, int level)
+    {
+        var known = new SortedDictionary<int, int>();
+        var unlocks = (classes.Classes.GetValueOrDefault(className)?.Unlocks ?? []).Concat(classes.CommonUnlocks);
+        foreach (var u in unlocks)
+            if (u[1] <= level) known[u[0]] = Math.Max(known.GetValueOrDefault(u[0]), u[2]);
+        return known.Select(k => (k.Key, k.Value)).ToList();
+    }
+
+    /// <summary>
+    /// 0x5100 entries: auto-learned kit plus chain-only and E-stack skills referenced on the default hotbar context
+    /// (the client greys a slot when a context id is missing from the skill list).
+    /// </summary>
+    public IReadOnlyList<(int SkillId, int Level)> SkillListForClient(string className, int level, StarterProfile profile)
+    {
+        var known = LearnedSkills(className, level).ToDictionary(k => k.SkillId, k => k.Level);
+        void EnsureChainOnly(int skillId)
+        {
+            if (skillId <= 0 || known.ContainsKey(skillId)) return;
+            if (Skill(skillId) is not { ChainPrev: > 0 }) return;
+            known[skillId] = 1;
+        }
+        foreach (var (_, barSkill) in profile.DefaultBar())
+        {
+            if (barSkill <= 0 || !known.ContainsKey(barSkill)) continue;
+            foreach (var id in ChainFollowUpIds(barSkill))
+                EnsureChainOnly(id);
+            var current = barSkill;
+            for (var i = 0; i < 8 && Skill(current) is { } def; i++)
+            {
+                if (def.ChainNext is not { Length: > 0 } next) break;
+                foreach (var id in next) EnsureChainOnly(id);
+                current = next[0];
+            }
+        }
+        return known.OrderBy(k => k.Key).Select(k => (k.Key, k.Value)).ToList();
+    }
+
+    /// <summary>FixSlot combo root for wire ids (16013450 mastery tier → 16010000 FixSlot root).</summary>
+    int BasicComboFixRoot(int skillId)
+    {
+        var root = skillId;
+        for (var i = 0; i < 8 && Skill(root) is { ChainPrev: > 0 } step; i++)
+            root = step.ChainPrev;
+        if (Skill(root) is { } rootDef && SkillCooldown.IsBasicAutoAttack(rootDef)) return root;
+        return root / 10_000 * 10_000;
+    }
+
+    /// <summary>
+    /// Official 0x3818 / hotbar context ids for FixSlot combo steps: base chain_next ids (16020000), never mastery-tier rows (16020050).
+    /// </summary>
+    public int BasicChainWireStepId(int skillId)
+    {
+        if (!IsBasicAttackChainSkill(skillId)) return skillId;
+        var fixRoot = BasicComboFixRoot(skillId);
+        if (Skill(fixRoot) is not { } rootDef || !SkillCooldown.IsBasicAutoAttack(rootDef))
+            fixRoot = fixRoot / 10_000 * 10_000;
+        var steps = DefaultContextSkills(fixRoot).Where(id => id > 0).ToList();
+        if (steps.Count == 0) return skillId;
+        var depth = 0;
+        for (var id = skillId; Skill(id) is { ChainPrev: > 0 } step; id = step.ChainPrev)
+            depth++;
+        return depth < steps.Count ? steps[depth] : steps[^1];
+    }
+
+    /// <summary>
+    /// Skill ids for ChainSkillActiveList_NT (wire 0x3818): Skill.dat chain_next on the cast id, else the family root's chain_next.
+    /// Official Ranger capture (2026-10-31): always base ids (14020000 -> 14030000 -> 14040000), never mastery-tier variants (14030050).
+    /// </summary>
+    public IReadOnlyList<int> ChainFollowUpIds(int castSkillId, int masteryLevel = 0)
+    {
+        var wireCast = IsBasicAttackChainSkill(castSkillId) ? BasicChainWireStepId(castSkillId) : castSkillId;
+        if (DirectChainNext(wireCast) is { Count: > 0 } own) return own;
+        var family = wireCast / 10_000 * 10_000;
+        return wireCast == family ? [] : DirectChainNext(family);
+    }
+
+    /// <summary>0x5100 level for basic-attack chain-only steps: same as the FixSlot root's mastery (base skill ids).</summary>
+    public static int ChainSkillKitLevel(int skillId, int rootMastery) => rootMastery;
+
+    /// <summary>
+    /// A FixSlot basic-attack chain step (Snipe / Rapid Fire / Spiral Arrow and their mastery ids): official applies no self abnormals on hit.
+    /// </summary>
+    public bool IsBasicAttackChainSkill(int skillId)
+    {
+        if (Skill(skillId) is null) return false;
+        var root = skillId;
+        for (var i = 0; i < 8 && Skill(root) is { ChainPrev: > 0 } step; i++)
+            root = step.ChainPrev;
+        if (Skill(root) is { } rootDef && SkillCooldown.IsBasicAutoAttack(rootDef)) return true;
+        var family = root / 10_000 * 10_000;
+        return family != root && Skill(family) is { } familyDef && SkillCooldown.IsBasicAutoAttack(familyDef);
+    }
+
+    /// <summary>Every skill id in a FixSlot basic attack chain (hotbar context + chain_next walk), official base ids only.</summary>
+    public IEnumerable<int> BasicAttackChainSkillIds(int rootSkillId, int rootMastery)
+    {
+        if (Skill(rootSkillId) is not { } root || !SkillCooldown.IsBasicAutoAttack(root)) yield break;
+        var seen = new HashSet<int>();
+        foreach (var id in DefaultContextSkills(rootSkillId))
+            if (id > 0 && seen.Add(id)) yield return id;
+        var current = rootSkillId;
+        for (var i = 0; i < 8; i++)
+        {
+            var follow = ChainFollowUpIds(current);
+            if (follow.Count == 0) break;
+            foreach (var id in follow)
+                if (seen.Add(id)) yield return id;
+            current = follow[0];
+        }
+    }
+
+    /// <summary>
+    /// Adds chain-only ids for default-bar roots so 0x5100 lists every basic combo step (base ids at root mastery level).
+    /// </summary>
+    public IReadOnlyList<(int SkillId, int Level)> WithChainVariantsOnHotbar(
+        IReadOnlyList<(int SkillId, int Level)> kit,
+        StarterProfile profile,
+        Func<int, int> masteryLevel)
+    {
+        var known = kit.ToDictionary(k => k.SkillId, k => k.Level);
+        void EnsureKitSkill(int skillId, int listLevel)
+        {
+            if (skillId <= 0 || Skill(skillId) is null) return;
+            if (HasPurchasableMasteryLevels(skillId))
+                listLevel = Math.Min(listLevel, masteryLevel(skillId));
+            known[skillId] = known.TryGetValue(skillId, out var cur) ? Math.Max(cur, listLevel) : listLevel;
+        }
+        void EnsureChainOnly(int skillId, int rootMastery)
+        {
+            if (skillId <= 0 || Skill(skillId) is not { ChainPrev: > 0 }) return;
+            EnsureKitSkill(skillId, ChainSkillKitLevel(skillId, rootMastery));
+        }
+        foreach (var (_, barSkill) in profile.DefaultBar())
+        {
+            if (barSkill <= 0 || !known.ContainsKey(barSkill)) continue;
+            var rootFamily = barSkill / 10_000 * 10_000;
+            var mastery = masteryLevel(rootFamily);
+            if (Skill(barSkill) is { } barDef && SkillCooldown.IsBasicAutoAttack(barDef))
+            {
+                foreach (var id in BasicAttackChainSkillIds(barSkill, mastery))
+                    EnsureKitSkill(id, ChainSkillKitLevel(id, mastery));
+                continue;
+            }
+            foreach (var id in DefaultContextSkills(barSkill))
+            {
+                if (id <= 0 || id == barSkill) continue;
+                if (Skill(id) is { ChainPrev: > 0 })
+                    EnsureChainOnly(id, mastery);
+                // PCContextSkillSlot alternates (Crushing Wave on slot 4, not Mocking Blade's stack) keep kit level — never mirror another bar skill's mastery in 0x5100 (client skill-point display).
+                else if (!known.ContainsKey(id))
+                    EnsureKitSkill(id, 1);
+            }
+            foreach (var id in ChainFollowUpIds(barSkill))
+                EnsureChainOnly(id, mastery);
+            var current = barSkill;
+            for (var i = 0; i < 8; i++)
+            {
+                var follow = ChainFollowUpIds(current);
+                if (follow.Count == 0) break;
+                foreach (var id in follow) EnsureChainOnly(id, mastery);
+                current = follow[0];
+            }
+        }
+        return known.OrderBy(k => k.Key).Select(k => (k.Key, k.Value)).ToList();
+    }
+
+    List<int> DirectChainNext(int skillId) =>
+        Skill(skillId)?.ChainNext is { Length: > 0 } next ? [.. next] : [];
+
+    /// <summary>A skill's definition: class-skills.json (Skill.dat), else a stigma's (tools/data/stigmas.json, docs/STIGMAS.md), else a
+    /// specialisation child's (<see cref="SpecializedChild"/>).</summary>
+    public SkillDefinition? Skill(int skillId) =>
+        classes.Skills.GetValueOrDefault(skillId.ToString(System.Globalization.CultureInfo.InvariantCulture)) is { } row
+            ? InheritedFromParent(skillId, row)
+            : StigmaTable.Embedded.Skill(skillId) ?? SpecializedChild(skillId);
+
+    readonly System.Collections.Concurrent.ConcurrentDictionary<int, SkillDefinition> inheritedFromParent = new();
+
+    /// <summary>
+    /// A class-skills.json row that is also a specialisation child does not carry SkillLv / SkillEffectLv / act fields.
+    /// Those stay on the parent (the child export in specialized-skills.json is used only when class-skills has no row).
+    /// </summary>
+    SkillDefinition InheritedFromParent(int skillId, SkillDefinition own) =>
+        inheritedFromParent.GetOrAdd(skillId, _ =>
+        {
+            if (SpecializedSkillTables.Embedded.ParentOf(skillId) is not { } parentId
+                || !classes.Skills.TryGetValue(parentId.ToString(System.Globalization.CultureInfo.InvariantCulture), out var parent))
+                return own;
+            var damage = InheritLevelGroups(own.Damage, parent.Damage);
+            var levels = own.CooldownLevels ?? parent.CooldownLevels;
+            var end = own.EndMs ?? parent.EndMs;
+            return ReferenceEquals(damage, own.Damage) && levels == own.CooldownLevels && end == own.EndMs
+                ? own
+                : own with { Damage = damage, CooldownLevels = levels, EndMs = end };
+        });
+
+    readonly System.Collections.Concurrent.ConcurrentDictionary<int, SkillDefinition?> specializedChildren = new();
+
+    /// <summary>
+    /// A specialisation child's cast data (ported from Addiboii/A2Core a1c5058, adapted): its own Skill.dat row in
+    /// specialized-skills.json (cost, damage, cooldown, casting time, range) with what that export does not carry taken from its
+    /// parent: the chain links (moved to the children of the same parts where SpecializedSkill.dat has them), the group cooldown
+    /// (the parent's, so a part change does not reset the cooldown; CANDIDATE), the context and the use / SkillCond conditions.
+    /// Null for anything else (and for the children class-skills.json already has).
+    /// </summary>
+    SkillDefinition? SpecializedChild(int skillId)
+    {
+        var table = SpecializedSkillTables.Embedded;
+        if (table.ParentOf(skillId) is not { } parentId) return null;
+        return specializedChildren.GetOrAdd(skillId, id =>
+        {
+            if (table.Skill(id) is not { } own || Skill(parentId) is not { } parent) return null;
+            var suffix = id - parentId;
+            int Moved(int step) => step > 0 && table.IsChild(step, step + suffix) ? step + suffix : step;
+            return own with
+            {
+                ChainPrev = Moved(parent.ChainPrev), ChainRate = parent.ChainRate, ChainWindowMs = parent.ChainWindowMs,
+                ChainDeactivate = parent.ChainDeactivate, ContextRegister = parent.ContextRegister,
+                GroupCooldownId = parent.GroupCooldownId > 0 ? parent.GroupCooldownId : parentId,
+                ChainNext = parent.ChainNext?.Select(Moved).ToArray(), SealStone = parent.SealStone, NeedsSpirit = parent.NeedsSpirit,
+                Damage = InheritLevelGroups(own.Damage, parent.Damage),
+                CooldownLevels = own.CooldownLevels ?? parent.CooldownLevels,
+                EndMs = own.EndMs ?? parent.EndMs,
+                NeedsPeace = parent.NeedsPeace, NeedsResource = parent.NeedsResource, UseConditionSource = parent.UseConditionSource,
+                HoldCharge = own.HoldCharge ?? parent.HoldCharge,
+                SkillCond = parent.SkillCond, SkillCondSource = parent.SkillCondSource, SkillCondGrant = parent.SkillCondGrant,
+                SkillCondGrantSource = parent.SkillCondGrantSource, StaggerGauge = parent.StaggerGauge, StaggerGaugeSource = parent.StaggerGaugeSource,
+                UseRangeCm = own.UseRangeCm > 0 ? own.UseRangeCm : parent.UseRangeCm,
+            };
+        });
+    }
+
+    /// <summary>Stigmas: slots, shards, costs and each class's stigma skills (tools/data/stigmas.json, docs/STIGMAS.md).</summary>
+    public StigmaTable Stigmas => StigmaTable.Embedded;
+
+    /// <summary>Skill.dat NeedSkillUseRange (cm), from class-skills export or skill-cast-ranges.json overlay.</summary>
+    public double SkillUseRangeCm(int skillId)
+    {
+        var key = skillId.ToString(System.Globalization.CultureInfo.InvariantCulture);
+        if (Skill(skillId) is { UseRangeCm: > 0 } definition) return definition.UseRangeCm;
+        return skillCastRanges.Value.GetValueOrDefault(key);
+    }
+
+    /// <summary>
+    /// Skill.dat GroupCoolTimeId: the cooldown a cast starts and waits for. Charge levels and specialised variants name their base
+    /// skill; 0 or a missing export falls back to the skill id.
+    /// </summary>
+    public int CooldownGroup(int skillId) =>
+        Skill(skillId) is { GroupCooldownId: > 0 } definition ? definition.GroupCooldownId : skillId;
+
+    /// <summary>Whether SkillEffectLv.dat listed flat values for this group (levels 2+).</summary>
+    public bool HasEffectLevel(string? group) =>
+        group is not null && classes.EffectLevels?.GetValueOrDefault(group) is { Length: > 0 };
+
+    /// <summary>
+    /// A Damage row's flat damage at a skill level: SkillEffectLv.dat [0]/[1] (PvP [21]/[22]) for levels 2+ (level N uses row N,
+    /// CANDIDATE). The row's own values at level 1, or when the group or that level is missing (the highest listed level above it).
+    /// </summary>
+    public int?[] LevelFlat(DamageRow row, int skillLevel, bool pvp)
+    {
+        var own = pvp && row.Pvp is { } p ? p.Flat : row.Flat;
+        if (skillLevel <= 1 || row.LevelGroup is null || classes.EffectLevels?.GetValueOrDefault(row.LevelGroup) is not { Length: > 0 } levels)
+            return own;
+        var values = levels[Math.Min(skillLevel - 2, levels.Length - 1)];
+        return values.Length < 4 ? own : pvp ? [values[2], values[3]] : [values[0], values[1]];
+    }
+
+    /// <summary>
+    /// A specialisation child's rows keep the parent's SkillEffectLv group when the level-1 flats match (the child export does not
+    /// carry SkillEffectLvGroupId). Different flats stay on the candidate per-level scale.
+    /// </summary>
+    static DamageRow[] InheritLevelGroups(DamageRow[] child, DamageRow[] parent)
+    {
+        if (child.Length == 0 || child.Length != parent.Length) return child;
+        static int Flat0(int?[] pair) => pair.Length > 0 ? pair[0] ?? 0 : 0;
+        var copy = new DamageRow[child.Length];
+        var changed = false;
+        for (var i = 0; i < child.Length; i++)
+        {
+            var row = child[i];
+            var fromParent = parent[i];
+            if (row.LevelGroup is null && fromParent.LevelGroup is not null && Flat0(row.Flat) == Flat0(fromParent.Flat))
+            {
+                copy[i] = row with { LevelGroup = fromParent.LevelGroup };
+                changed = true;
+            }
+            else copy[i] = row;
+        }
+        return changed ? copy : child;
+    }
+
+    /// <summary>The four hotbar context ids: E-key combo stack, bar ContextChangeSkillList, else chain_next (Q and other FixSlot chains).</summary>
+    public IReadOnlyList<int> DefaultContextSkills(int skillId, int masteryLevel = 0) => DefaultContextSkillsCore(skillId);
+
+    IReadOnlyList<int> DefaultContextSkillsCore(int skillId)
+    {
+        if (ESlotComboByBarSkill.TryGetValue(skillId, out var combo))
+        {
+            // QuickSlotInfo._skill_id matches context[0] on Q (FixSlot chains); E uses the same layout with the bar
+            // rampage/scattershot id first and the Skill Order stack in the remaining slots.
+            var comboCtx = new List<int> { skillId };
+            foreach (var id in combo)
+                if (id != skillId && comboCtx.Count < 4) comboCtx.Add(id);
+            while (comboCtx.Count < 4) comboCtx.Add(0);
+            return comboCtx;
+        }
+        if (BarContextByDefaultSkill.TryGetValue(skillId, out var barCtx))
+        {
+            var barList = new List<int>();
+            foreach (var id in barCtx)
+                if (id > 0 && barList.Count < 4) barList.Add(id);
+            while (barList.Count < 4) barList.Add(0);
+            return barList;
+        }
+        var ctx = new List<int> { skillId };
+        if (Skill(skillId)?.ChainNext is { Length: > 0 } branches)
+        {
+            if (branches.Length > 1)
+            {
+                foreach (var id in branches.Take(3)) ctx.Add(id);
+            }
+            else
+            {
+                var current = skillId;
+                while (ctx.Count < 4)
+                {
+                    if (Skill(current)?.ChainNext is not { Length: > 0 } next) break;
+                    current = next[0];
+                    ctx.Add(current);
+                }
+            }
+        }
+        while (ctx.Count < 4) ctx.Add(0);
+        return ctx;
+    }
+
+    /// <summary>Default SkillCustomizing rows (cond_id, skill_id, priority) from Skill.dat effect filters.</summary>
+    public IReadOnlyList<(int CondId, int SkillId, byte Priority)> DefaultSkillCustomizing(int skillId) =>
+        classes.SkillCustomizing?.GetValueOrDefault(skillId.ToString(System.Globalization.CultureInfo.InvariantCulture)) is { } rows
+            ? rows.Select(r => (r[0], r[1], (byte)r[2])).ToList()
+            : [];
+
+    /// <summary>Level-one weapon of the class's weapon type for race 1 (Light) or 2 (Dark).</summary>
+    public int? StarterWeapon(StarterProfile? profile) =>
+        profile is not null && classes.Classes.GetValueOrDefault(profile.Class)?.StarterWeapons.TryGetValue(
+            profile.Race.ToString(System.Globalization.CultureInfo.InvariantCulture), out var weapon) == true ? weapon : null;
+
+    /// <summary>An equippable item's Item.dat summary, or null.</summary>
+    public ItemInfo? Item(int? itemId) =>
+        itemId is null ? null : items.GetValueOrDefault(itemId.Value.ToString(System.Globalization.CultureInfo.InvariantCulture));
+
+    /// <summary>SubStats roll table for a template (empty when none).</summary>
+    public IReadOnlyList<(string Stat, int Min, int Max, int Weight)> SubstatRolls(int templateId) =>
+        Item(templateId)?.SubstatRolls() ?? [];
+
+    /// <summary>The weapon's EquipCategory (the same names as Skill.dat weapon types), for any weapon in Item.dat.</summary>
+    public string? WeaponType(int? itemId) =>
+        Item(itemId)?.Category ?? (itemId is null ? null : classes.Classes.Values.FirstOrDefault(c => c.StarterWeapons.ContainsValue(itemId.Value))?.WeaponType);
+
+    public WeaponStats WeaponStatsOf(int? itemId) =>
+        Item(itemId) is { } item ? new WeaponStats(item.Stat("WeaponMinDamage"), item.Stat("WeaponDamage"), item.Stat("Critical"), item.Stat("WeaponAccuracy"))
+        : itemId is not null && classes.WeaponStats.TryGetValue(itemId.Value.ToString(System.Globalization.CultureInfo.InvariantCulture), out var stats)
+            ? stats : new WeaponStats(0, 0, 0, 0);
+
+    /// <summary>Item.dat ItemLevel (1 for unknown items), the equip level the client sums.</summary>
+    public int ItemLevel(int itemId) => Item(itemId)?.Level ?? 1;
+
+    /// <summary>PcStatLevel stats for a class at a level (FixingDamage, Defense, HPMax, ...).</summary>
+    public IReadOnlyDictionary<string, int> BaseStats(string? className, int level) =>
+        className is not null && classes.Stats.TryGetValue(className, out var table)
+            && table.TryGetValue(ClampLevel(level).ToString(System.Globalization.CultureInfo.InvariantCulture), out var stats)
+            ? stats : new Dictionary<string, int>();
+
+    /// <summary>A damaging NPC skill, or null (unknown, or no damage effect).</summary>
+    public NpcSkill? NpcSkill(int skillId) =>
+        npcs.Skills?.GetValueOrDefault(skillId.ToString(System.Globalization.CultureInfo.InvariantCulture)) is { Effect: > 0 } skill ? skill : PcSummons.Skill(skillId);
+
+    /// <summary>Timed damage rows of an NPC skill (multi-hit); falls back to one row from <see cref="NpcSkill"/>.</summary>
+    public IReadOnlyList<NpcSkillHitRow> NpcSkillHits(int skillId)
+    {
+        var key = skillId.ToString(System.Globalization.CultureInfo.InvariantCulture);
+        if (npcs.SkillHits?.GetValueOrDefault(key) is { Length: > 0 } rows) return rows;
+        return npcs.Skills?.GetValueOrDefault(key) is { Effect: > 0 } skill ? [new NpcSkillHitRow(skill.Effect)] : [];
+    }
+
+    public IReadOnlyList<NpcSpawn> Spawns(int mapId) =>
+        spawnsByMap.GetOrAdd(mapId, id => (npcs.Maps.GetValueOrDefault(id.ToString(System.Globalization.CultureInfo.InvariantCulture)) ?? [])
+            .Select(s => (s, t: npcs.Templates[s[1].GetInt32().ToString(System.Globalization.CultureInfo.InvariantCulture)]))
+            .Select(x => new NpcSpawn(x.s[0].GetString()!, x.s[1].GetInt32(), x.t.Level, x.t.Relationship, x.t.Aggressive, x.t.WalkSpeed, x.t.RunSpeed,
+                x.t.Radius, x.t.Function, [x.s[2].GetDouble(), x.s[3].GetDouble(), x.s[4].GetDouble()], x.s[5].GetDouble(), x.t.AggroType, x.t.Aggro,
+                x.t.Skills, x.t.Height, x.t.NoRotation,
+                x.s.Length > 6 ? (uint)x.s[6].GetInt64() : 0, x.s.Length > 7 ? x.s[7].GetInt32() : 0,
+                x.s.Length > 8 && x.s[8].GetInt32() is >= 0 and var route && npcs.Routes?.GetValueOrDefault(id.ToString(System.Globalization.CultureInfo.InvariantCulture)) is { } routes
+                    && route < routes.Length ? routes[route] : null, x.t.SubType, x.t.Grade, x.t.Air, x.t.HpMax, x.t.GroggyGuardMax, x.t.Untouchable, x.t.HitCount)).ToList());
+
+    readonly System.Collections.Concurrent.ConcurrentDictionary<int, IReadOnlyList<NpcSpawn>> spawnsByMap = new();
+
+    /// <summary>A map's waypoint set by name (map event NpcMoveToWayPoint directives), or null.</summary>
+    public NpcRoute? Route(int mapId, string name) =>
+        npcs.Routes?.GetValueOrDefault(mapId.ToString(System.Globalization.CultureInfo.InvariantCulture))
+            ?.FirstOrDefault(r => string.Equals(r.Name, name, StringComparison.OrdinalIgnoreCase));
+
+    /// <summary>Maps with NPC spawns.</summary>
+    public IEnumerable<int> SpawnMaps => npcs.Maps.Keys.Select(k => int.Parse(k, System.Globalization.CultureInfo.InvariantCulture));
+
+    /// <summary>
+    /// NpcData templates the client usually will not open map-event step talk on (Companion relationship / function, or aggressive monsters).
+    /// </summary>
+    public bool MapEventAskNpcNeedsProximityFallback(int npcId) =>
+        npcs.Templates.TryGetValue(npcId.ToString(System.Globalization.CultureInfo.InvariantCulture), out var t)
+        && (t.Relationship == 13
+            || string.Equals(t.Function, "Companion", StringComparison.OrdinalIgnoreCase)
+            || t.Aggressive && t.Relationship is 6 or 11 or 12);
+
+    /// <summary>An NPC the server places itself (no MapData spawn), from its template: null when the template is unknown.</summary>
+    public NpcSpawn? NpcFromTemplate(int npcId, string name, double[] position, double yaw) =>
+        npcs.Templates.TryGetValue(npcId.ToString(System.Globalization.CultureInfo.InvariantCulture), out var t)
+            ? new NpcSpawn(name, npcId, t.Level, t.Relationship, t.Aggressive, t.WalkSpeed, t.RunSpeed, t.Radius, t.Function, position, yaw, t.AggroType, t.Aggro, t.Skills, t.Height, t.NoRotation, SubType: t.SubType, Grade: t.Grade, Air: t.Air, HpMax: t.HpMax, GroggyGuardMax: t.GroggyGuardMax, Untouchable: t.Untouchable, HitCount: t.HitCount)
+            : null;
+
+    /// <summary>A placed spawn of the NPC (its template and name), preferring <paramref name="mapId"/>; null when it is never placed.</summary>
+    public NpcSpawn? NpcPlaced(int npcId, int mapId = 0) =>
+        Spawns(mapId).FirstOrDefault(s => s.NpcId == npcId) ?? SpawnMaps.Select(m => Spawns(m).FirstOrDefault(s => s.NpcId == npcId)).FirstOrDefault(s => s is not null);
+
+    /// <summary>Distinct placed NPCs whose name contains the text (staff spawning), at most <paramref name="limit"/>.</summary>
+    public IReadOnlyList<NpcSpawn> NpcsNamed(string text, int limit = 30) =>
+        SpawnMaps.SelectMany(Spawns).Where(s => s.Name.Contains(text, StringComparison.OrdinalIgnoreCase) || s.NpcId.ToString(System.Globalization.CultureInfo.InvariantCulture) == text)
+            .DistinctBy(s => s.NpcId).Take(limit).ToList();
+}

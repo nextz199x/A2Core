@@ -1,0 +1,213 @@
+using System.Collections.Concurrent;
+using Aion.Application.Chat;
+
+namespace Aion.World;
+
+/// <summary>Characters currently in the world on this host: name → game session (and its account, when authenticated).</summary>
+public sealed class WorldPresence
+{
+    public sealed record Entry(GameSession Session, Guid? AccountId, DateTimeOffset Since);
+
+    readonly ConcurrentDictionary<string, Entry> byName = new(StringComparer.OrdinalIgnoreCase);
+    int connections;
+
+    public void Enter(string name, GameSession session, Guid? accountId) => byName[name] = new Entry(session, accountId, DateTimeOffset.UtcNow);
+
+    /// <summary>Open game connections, in the world or not (staff overview).</summary>
+    public int Connections => Volatile.Read(ref connections);
+    public void Connected() => Interlocked.Increment(ref connections);
+    public void Disconnected() => Interlocked.Decrement(ref connections);
+
+    /// <summary>Everyone in the world now (staff overview).</summary>
+    public IReadOnlyList<Entry> All => [.. byName.Values];
+
+    /// <summary>Characters in the world that are not server-side playerbots (public player count).</summary>
+    public int RealPlayers => All.Count(e => !e.Session.Bot);
+
+    public void Leave(string name, GameSession session)
+    {
+        if (byName.TryGetValue(name, out var entry) && entry.Session == session) byName.TryRemove(new KeyValuePair<string, Entry>(name, entry));
+    }
+
+    public Entry? Find(string name) => byName.GetValueOrDefault(name);
+
+    /// <summary>The session playing a stored character, if it is in the world.</summary>
+    public Entry? FindCharacter(Guid character) => byName.Values.FirstOrDefault(e => e.Session.CharacterId == character);
+}
+
+/// <summary>Who may use GM commands, from trusted configuration and authentication only.</summary>
+public sealed record GmPolicy
+{
+    /// <summary>Development logins only: character names granted GM (no accounts exist there).</summary>
+    public IReadOnlySet<string> DevelopmentNames { get; init; } = new HashSet<string>();
+    /// <summary>
+    /// Authenticated accounts: the account's staff role ("admin" or "gamemaster", see
+    /// CharacterNames.DisplayRole), or null for players. Read from the database on each call. A character
+    /// carries the role only when flagged staff (CharacterState.Staff; GameSession.IsAdmin).
+    /// </summary>
+    public Func<Guid, CancellationToken, Task<string?>> StaffRole { get; init; } = (_, _) => Task.FromResult<string?>(null);
+    /// <summary>Item catalogue search (template ID or name), when the catalogue is available.</summary>
+    public Func<Guid, string, CancellationToken, Task<IReadOnlyList<(int Id, string Name)>>>? SearchItems { get; init; }
+    /// <summary>Stored grant: (staff account, character, template ID, count).</summary>
+    public Func<Guid, Guid, int, long, CancellationToken, Task>? GrantItem { get; init; }
+    /// <summary>Stored level change: (staff account, character, level).</summary>
+    public Func<Guid, Guid, int, CancellationToken, Task>? SetLevel { get; init; }
+    /// <summary>
+    /// Stored class change: (staff account, character, class name) → whether it changed, the
+    /// class's name, and the classes available to the character (its race and gender).
+    /// </summary>
+    public Func<Guid, Guid, string, CancellationToken, Task<(bool Changed, string? Name, IReadOnlyList<string> Available)>>? ChangeClass { get; init; }
+    /// <summary>Stored ascension grade: (staff account, character, grade 1..6).</summary>
+    public Func<Guid, Guid, int, CancellationToken, Task>? SetAscension { get; init; }
+    /// <summary>Stored wing registration: (staff account, character, Wing.dat ids).</summary>
+    public Func<Guid, Guid, int[], CancellationToken, Task>? AcquireWings { get; init; }
+}
+
+/// <summary>
+/// "//&lt;builder command&gt;" in chat (e.g. "//SetInvisible true"): a fallback for the client console's "s &lt;command&gt;"
+/// (0x362e), running the same <see cref="BuilderCommands"/> on the sender's game loop. The
+/// sender is the character in the world on this host under the name the client sends with
+/// the message; rights and audit are the builder commands'.
+/// </summary>
+public sealed class GmCommands(WorldPresence presence, BuilderCommands builder) : IChatCommandHandler
+{
+    public bool Owns(string content) => content.TrimStart().StartsWith('/');
+
+    static bool IsStigmaCommand(string text)
+    {
+        var trimmed = text.TrimStart();
+        if (!trimmed.StartsWith('/')) return false;
+        var word = trimmed.TrimStart('/').TrimStart();
+        return word.StartsWith("stigma", StringComparison.OrdinalIgnoreCase)
+            && (word.Length == 6 || (word.Length >= 7 && (word.StartsWith("stigmas", StringComparison.OrdinalIgnoreCase) ? word.Length == 7 || char.IsWhiteSpace(word[7]) : char.IsWhiteSpace(word[6]))));
+    }
+
+    static string? StigmaCommandArgument(string text)
+    {
+        var word = text.TrimStart().TrimStart('/').TrimStart();
+        if (word.StartsWith("stigmas", StringComparison.OrdinalIgnoreCase)) word = word[7..].TrimStart();
+        else if (word.StartsWith("stigma", StringComparison.OrdinalIgnoreCase)) word = word[6..].TrimStart();
+        else return null;
+        return word.Length == 0 ? null : word;
+    }
+
+    /// <summary>
+    /// "//report &lt;text&gt;" for every player (not a builder command): a ticket for staff with the sender's account and
+    /// character; the reply to show. Null: reports are not available on this host.
+    /// </summary>
+    public Func<ChatIdentity, string, string, CancellationToken, Task<string>>? Report { get; init; }
+
+    /// <summary>Playerbots (docs/PLAYERBOTS.md) for "//bot"; null when Aion:Bots:Enabled is off.</summary>
+    public PlayerBots? Bots { get; init; }
+
+    /// <summary>QA quest bots (docs/QA_BOTS.md) for "//qa"; null when Aion:QaBots:Enabled is off.</summary>
+    public QaBots? QaBots { get; init; }
+
+    /// <summary>"//ah ..." (docs/MARKET.md): chat auction house; null when Aion:Market:Enabled is off or there is no game database.</summary>
+    public MarketCommands? Market { get; init; }
+
+    static bool IsBotCommand(string line) =>
+        line.StartsWith("bot", StringComparison.OrdinalIgnoreCase) && (line.Length == 3 || char.IsWhiteSpace(line[3]));
+
+    static bool IsQaCommand(string line) =>
+        line.StartsWith("qa", StringComparison.OrdinalIgnoreCase) && (line.Length == 2 || char.IsWhiteSpace(line[2]));
+
+    public async Task<string> HandleAsync(ChatIdentity sender, string userName, string content, CancellationToken ct)
+    {
+        var text = content.Trim();
+        // "/stigma" (or "//stigma") for every player: Stigma Shards, slots and stigmas (docs/STIGMAS.md).
+        // Staff may also "//stigma grant <count>" to add bonus shards (shop / item income).
+        if (IsStigmaCommand(text))
+        {
+            if ((presence.Find(userName) ?? presence.Find(Aion.Core.Characters.CharacterNames.Stored(userName))) is not { } reader)
+                return "Enter the world first.";
+            try
+            {
+                var argument = StigmaCommandArgument(text);
+                if (argument is not null)
+                {
+                    if (!await builder.AllowedAsync(reader.Session, ct))
+                        return "Staff only: //stigma grant <count> adds bonus Stigma Shards. /stigma shows your shards and slots.";
+                    var parts = argument.Split((char[]?)null, StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+                    if (parts.Length is < 2 or > 3
+                        || !parts[0].Equals("grant", StringComparison.OrdinalIgnoreCase)
+                        || !int.TryParse(parts[1], out var grant)
+                        || grant <= 0
+                        || (parts.Length == 3 && !parts[2].Equals("shards", StringComparison.OrdinalIgnoreCase) && !parts[2].Equals("shard", StringComparison.OrdinalIgnoreCase)))
+                        return "Usage: //stigma grant <count>";
+                    return await reader.Session.InvokeAsync(async _ =>
+                    {
+                        var granted = await reader.Session.GrantStigmaBonusAsync(grant, ct);
+                        return (granted.Message, granted.Packets);
+                    }).WaitAsync(TimeSpan.FromSeconds(10), ct);
+                }
+                return await reader.Session.InvokeAsync(_ => (reader.Session.StigmaSummary(), new List<byte[]>())).WaitAsync(TimeSpan.FromSeconds(10), ct);
+            }
+            catch (Exception error) when (error is TimeoutException or TaskCanceledException)
+            {
+                return "The game connection did not respond.";
+            }
+        }
+        if (!text.StartsWith("//", StringComparison.Ordinal)) return "Unknown command. Use //help.";
+        var line = text[2..].Trim();
+        if (line.StartsWith("report", StringComparison.OrdinalIgnoreCase) && (line.Length == 6 || char.IsWhiteSpace(line[6])))
+        {
+            var report = line[6..].Trim();
+            if (Report is null) return "Reports are not available on this server.";
+            if (report.Length < 3) return "Write what happened: //report <text> (a bug, a player, or being stuck).";
+            return await Report(sender, Aion.Core.Characters.CharacterNames.Stored(userName), report, ct);
+        }
+        // The client may send the displayed name ("[GM] Elyra"); the world knows the stored one.
+        var actor = presence.Find(userName) ?? presence.Find(Aion.Core.Characters.CharacterNames.Stored(userName));
+        if (actor is null) return "Enter the world first.";
+        try
+        {
+            // "//admin": the client's own in-game panel is its DevHelper (InputKeyMapping Dev_DevHelper = F10,
+            // Dev_DevTestUI = Ctrl+~, both bDev), enabled by Login_RS _is_admin; the server only explains it.
+            if (line.Equals("admin", StringComparison.OrdinalIgnoreCase)
+                || line.Equals("gm", StringComparison.OrdinalIgnoreCase) || line.Equals("panel", StringComparison.OrdinalIgnoreCase))
+                return await builder.AllowedAsync(actor.Session, ct)
+                    ? "GM panel: press F10 (client dev helper; Ctrl+~ dev test UI). It needs the lobby admin flag: re-login after a staff change. "
+                      + "Builder commands (in chat: //<command>; console: s <command>): " + string.Join(", ", BuilderCommands.Supported)
+                    : "GM permission required.";
+            if (IsQaCommand(line))
+            {
+                if (QaBots is null) return "QA bots are off on this server.";
+                if (!await builder.AllowedAsync(actor.Session, ct)) return "QA bots are staff-only.";
+                return await QaBots.CommandAsync(line[2..].Trim(), actor.Session.CharacterName, ct);
+            }
+            // "//bot ...": staff only unless Aion:Bots:PlayersMayUse; runs on the summoner's loop (it reads the lobby).
+            if (IsBotCommand(line))
+            {
+                if (Bots is null) return "Playerbots are off on this server.";
+                if (!Bots.Options.PlayersMayUse && !await builder.AllowedAsync(actor.Session, ct)) return "Playerbots are for staff on this server.";
+                var rest = line[3..].Trim();
+                return await actor.Session.InvokeAsync(async now => (await Bots.CommandAsync(actor.Session, rest, now, ct), new List<byte[]>()))
+                    .WaitAsync(TimeSpan.FromSeconds(30), ct);
+            }
+            if (line.StartsWith("ah", StringComparison.OrdinalIgnoreCase) && (line.Length == 2 || char.IsWhiteSpace(line[2])))
+                return Market is { } market
+                    ? await market.HandleAsync(actor.Session, line[2..].Trim(), ct)
+                    : "The market is not available on this server (enable Aion:Market:Enabled).";
+            if (line.Length == 0 || line.Equals("help", StringComparison.OrdinalIgnoreCase))
+            {
+                var marketHint = Market is { Options.Enabled: true } ? " //ah for the auction house." : "";
+                var botHint = Bots is { Options.Enabled: true, Options.PlayersMayUse: true } ? " //bot add <character> summons one of your characters as a bot." : "";
+                return await builder.AllowedAsync(actor.Session, ct)
+                    ? "Builder commands (in chat: //<command>; console: s <command>): " + string.Join(", ", BuilderCommands.Supported)
+                        + (Bots is { Options.Enabled: true } ? "; //bot for playerbots" : "")
+                    : "Commands: //report <text> sends a report to the staff. /stigma shows your Stigma Shards and slots." + marketHint + botHint
+                        + " Staff: //stigma grant <count>." + (Bots is { Options.Enabled: true } ? " //bot for playerbots." : "");
+            }
+            return await actor.Session.InvokeAsync(async now =>
+            {
+                var outcome = await builder.RunAsync(actor.Session, line, now, ct);
+                return (outcome.Message, outcome.Packets);
+            }).WaitAsync(TimeSpan.FromSeconds(10), ct);
+        }
+        catch (Exception error) when (error is TimeoutException or TaskCanceledException)
+        {
+            return "The game connection did not respond.";
+        }
+    }
+}

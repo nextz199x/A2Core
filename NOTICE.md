@@ -1,0 +1,37 @@
+# Notice
+
+A2Core is an independent, non-commercial community project for education and interoperability research. It is not
+affiliated with, endorsed by or connected to NCSoft Corporation. AION and AION2 are trademarks of NCSoft Corporation;
+they are named only to say which client A2Core works with.
+
+The code is original work under the AGPL-3.0 (see LICENSE), with third-party open-source code under its own license:
+CUE4Parse (Apache-2.0, `third_party/CUE4Parse`) and the launcher's NuGet packages SteamKit2 (LGPL-2.1) and QRCoder
+(MIT). The game data the server runs on (`tools/data/*.json`, `data/aion-server-data.tar.gz`,
+`research/local/tooling/mappings`) is derived from the game client and is not covered by the AGPL.
+
+The client type mappings (`research/local/tooling/mappings/AION2-5.3.2.0-2.0.6.0.usmap`) are the community mappings
+for Global 2.0.6.0 from kelekelio/aion2-usmaps (https://github.com/kelekelio/aion2-usmaps).
+
+Opcode names in `research/local/tooling/opcodes.json` and several packet layouts were checked against nuriland/a2kit
+(https://github.com/nuriland/a2kit, commit fb693ba), MIT License, Copyright (c) 2026 nuri. NOIA2, Aether-Aion2-DPS-meter-Global
+and AIon2-Dps-Meter (GPL-3.0) were used only to compare packet layouts; no code was copied from them.
+
+The dungeon boss phases and waves (`tools/boss_phases.py`, `server/Aion.World/BossPhases.cs`, `NpcAi.Bosses.cs`,
+`GameSession.Bosses.cs`) and the field bosses (`FieldBosses.cs`, `GameSession.FieldBosses.cs`, `FieldBossNoticeService.cs`)
+are adapted from ckrealm/A2Core (https://github.com/ckrealm/A2Core, branch friends-server, commits c299686, c52fc1a and
+77ac9ed), AGPL-3.0.
+
+Later upstream work (Addiboii/A2Core, https://github.com/Addiboii/A2Core, branch update-26262663, after v0.2.0-rc1),
+AGPL-3.0, is ported here commit by commit: each ported commit keeps Addiboii as its author and names the upstream commit
+("cherry picked from commit ..."). Our own adaptations are noted in the commits and pull requests.
+
+The duty missions, Shugo festival games, spatial rifts and hidden cubes, season ranking and rewards, skill presets and
+character inspect, daily dungeons, Black Cloud random shop and Arcana are ported from zaraza87/A2Core
+(https://github.com/zaraza87/A2Core, branch dell-merge-2026-11), AGPL-3.0; the ported files say so in their headers.
+Launcher and gameplay fixes are also ported from Doxylamin/KiskEmu (https://github.com/Doxylamin/KiskEmu, including
+tag launcher-v0.6.1), AGPL-3.0.
+
+A2Core contains no game client and no client archive key. Players use their own copy of the game, obtained through
+their own Steam account.
+
+Do not use A2Core for commercial purposes: no paid access, donations for perks or item sales.

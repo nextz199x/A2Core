@@ -1,0 +1,392 @@
+using Aion.Protocol.Native;
+
+namespace Aion.World;
+
+/// <summary>A server-side NPC: what the client draws plus combat and movement data from NpcData.</summary>
+public sealed class Target
+{
+    public required int Key { get; init; }
+    public required string Name { get; init; }
+    public int Hp { get; set; }
+    public required int HpMax { get; set; }
+    public int Defense { get; init; }
+    public Vector3d Position { get; set; }
+    public int NpcId { get; init; }
+    /// <summary>A player's summon (Skill.dat Spawn): the summoner's key, else 0.</summary>
+    public int OwnerKey { get; init; }
+    /// <summary>The summoner as the appear names it (_parent_desc): the client tags the summon "[Owner]".</summary>
+    public CharDescWire? OwnerDesc { get; init; }
+    public int Level { get; init; } = 1;
+    public double Direction { get; set; }
+    public int Relationship { get; set; } = 6;   // ERelationshipEntity (6 Monster); map events change it
+    /// <summary>Held by a scripted abnormal (stun, hold, stone): it neither moves nor attacks until released.</summary>
+    public bool Held { get; set; }
+    /// <summary>NpcData says players cannot hit it (NpcSpawn.Untouchable): area hits, spirits and companions leave it alone.</summary>
+    public bool Untouchable { get; init; }
+    /// <summary>NpcData bHitCountBased: every hit takes 1 HP and none is critical.</summary>
+    public bool HitCount { get; init; }
+    /// <summary>Hits as they land: 1 HP each, never critical, on a hit-count NPC; unchanged otherwise.</summary>
+    public IReadOnlyList<Hit> Landed(IReadOnlyList<Hit> hits) =>
+        HitCount ? hits.Select(h => h with { Amount = Math.Min(1, h.Amount), Critical = false }).ToList() : hits;
+    /// <summary>One NPC's damage as it lands (same rule as the hit-list overload).</summary>
+    public int Landed(int damage) => HitCount ? Math.Min(1, damage) : damage;
+    /// <summary>What a player's side picks to hit by itself (spirits, companions): hostile and not untouchable.</summary>
+    public bool Attackable => Hostile && !Untouchable;
+    /// <summary>Silenced by an abnormal: it uses its basic attack only (no special skills).</summary>
+    public bool Silenced { get; set; }
+    /// <summary>Slowed by an abnormal (1/10000 of its speed; 10000 is rooted): it moves that much slower, a rooted one only attacks in reach.</summary>
+    public int SlowPermille { get; set; }
+    /// <summary>Thrown, pulled or lifted by a skill until this time (ms): it moves and attacks no more than a held one (NpcAi).</summary>
+    public long DisplacedUntil { get; set; }
+    /// <summary>Immune through a scripted abnormal: the players' hits land for nothing.</summary>
+    public bool Immune { get; set; }
+    /// <summary>Its spawn height was put on the ground (navmesh floor or terrain) once the map's geometry was loaded.</summary>
+    public bool Snapped { get; set; }
+    public bool Aggressive { get; init; }        // NpcData AggroType Aggro_A
+    /// <summary>Map-event AskNpc steps: the client needs a non-aggressive appear even when NpcData says Aggro_A.</summary>
+    public bool AppearNonAggressive { get; set; }
+    public double WalkSpeed { get; init; }       // units per second
+    public double RunSpeed { get; init; }
+    public int Radius { get; init; }             // CollisionCylinderRadius
+    public string Function { get; init; } = "None";
+    public AggroShape? Aggro { get; init; }      // NpcAggroData by AggroDetectRange
+    public IReadOnlyList<int> Skills { get; init; } = [];   // ActiveSkillList
+    public bool NoRotation { get; init; }
+    /// <summary>Combat.DamageScale of its NpcSubType and Grade.</summary>
+    public double DamageScale { get; init; } = 1.0;
+    /// <summary>NpcData ObjectTerrainType Air: appears flying (move state 7 FlyingOnAirStop, substate 2; every official air NPC).</summary>
+    public bool Air { get; init; }
+    /// <summary>A flying monster: appears with the passive abnormal 10000001 (immunities; every official flying monster, 17 of 17).</summary>
+    public bool AirMonster { get; init; }
+    public const int AirPassiveAbnormal = 10000001;
+    /// <summary>The permanent abnormals' expiry on the wire (2099-12-31 15:00 UTC, OBSERVED with 10000001).</summary>
+    public const long PermanentExpiry = 0x3bb2ad57580;
+    /// <summary>MapData spawn UniqueKey (low 32 bits): the appear's spawn_unique_key.</summary>
+    public uint UniqueKey { get; init; }
+    /// <summary>The looping idle animation (social action) set in the appear, and when it started (Unix ms).</summary>
+    public int SocialAction { get; init; }
+    public long SocialStart { get; init; }
+    /// <summary>The waypoint set this NPC walks (a patrol or roamer), or null.</summary>
+    public NpcRoute? Route { get; init; }
+    /// <summary>Walking its route now (the appear says move_state Walk).</summary>
+    public bool Walking { get; set; }
+    /// <summary>Accumulated stagger gauge damage toward <see cref="StaggerGaugeMax"/> (shared map state).</summary>
+    public int StaggerGauge { get; set; }
+    /// <summary>Gauge capacity; 0 until first stagger hit (then default 100).</summary>
+    public int StaggerGaugeMax { get; set; }
+    /// <summary>Unix ms while the target is in Stagger (EAbnormalEffectType), after the gauge breaks.</summary>
+    public long StaggerUntil { get; set; }
+    /// <summary>Class skill id that spawned this PC summon (Spiritmaster 16100000…); 0 for ordinary NPCs.</summary>
+    public int SummonSourceSkill { get; set; }
+    public string SubType { get; init; } = "NormalMonster";
+    public int Grade { get; init; } = 3;
+    /// <summary>NpcData groggy guard max when exported on the template (0 = derive from rank rules).</summary>
+    public int TemplateGroggyMax { get; init; }
+    /// <summary>Boss groggy guard (0 = none); sent with 0xe005 UpdateGroggyInfo_NT.</summary>
+    public int GroggyMax { get; set; }
+    public int GroggyEnergy { get; set; }
+
+    /// <summary>A custom NPC (staff dashboard: NPCs) this target places; null for every other NPC.</summary>
+    public Aion.Application.Gameplay.CustomNpc? Custom { get; init; }
+
+    public bool Dead => Hp <= 0;
+    /// <summary>When it died (ms on the killer's loop; 0: not dead or killed by something that does not set it): its corpse goes CorpseMs later.</summary>
+    public long KilledAtMs { get; set; }
+    /// <summary>The corpse was removed (0x3642) and the NPC waits for its respawn.</summary>
+    public bool CorpseRemoved { get; set; }
+
+    /// <summary>Monster-family ERelationshipEntity values.</summary>
+    public bool Hostile => Relationship is 6 or 11 or 16 or 17 or 18 or 19 or 20 or 21;
+
+    public NpcAppearance Appearance() => new(Key, NpcId, Position, Direction, Hp, HpMax, Level, Relationship, AppearNonAggressive ? false : Aggressive, Dead,
+        UniqueKey, SocialAction, SocialStart, Walking && !Dead,
+        MoveState: Air ? NpcAppearance.FlyingOnAirStop : (byte)0, MoveSubstate: Air ? (byte)2 : (byte)0,
+        Abnormals: AirMonster ? [new AbnormalWire(1, AirPassiveAbnormal, -1, PermanentExpiry, CasterKey: Key, RangeBase: Position)] : null,
+        ParentKey: OwnerKey, Parent: OwnerDesc);
+
+    /// <summary>0x3641 wire for a player's elemental spirit (official masked layout).</summary>
+    public NpcAppearance SummonWireAppearance(int ownerKey) =>
+        Appearance() with
+        {
+            MoveState = NpcAppearance.FlyingOnAirStop, MoveSubstate = 2, Reason = NpcAppearance.NpcSpawnReason,
+            Aggressive = true, Parent = null, SpawnAct = GamePackets.SpiritSpawnActId,
+            Abnormals =
+            [
+                new AbnormalWire(1, ElementalSummons.SpiritAbnormalId(NpcId), -1, PermanentExpiry, CasterKey: ownerKey, RangeBase: Position),
+            ],
+        };
+}
+
+public sealed record Hit(int Amount, bool Critical, int EffectId);
+
+/// <summary>
+/// Skill damage. A data-driven CANDIDATE model, not recovered retail formulas (tools/combat.py):
+/// attack = weapon roll + FixingDamage(level); raw = (flat + attack * ratio / 10000) / HitDivisor per Damage row;
+/// crit chance (Critical + attribute crit) / 1000 (capped at 0.5) for x1.5; optional accuracy shaves defense (CANDIDATE);
+/// damage = raw * 1000 / (1000 + defense), at least 1.
+/// </summary>
+public static class Combat
+{
+    public const double CriticalMultiplier = 1.5, CriticalCap = 0.5;
+    public const int DefenseScale = 1000;
+    /// <summary>CANDIDATE: effective defense divisor per point of accuracy rating (weapon + DEX-derived).</summary>
+    public const int AccuracyDefenseDivisor = 50;
+    /// <summary>CANDIDATE: cap on total amplify basis points in one hit (gear + buffs).</summary>
+    public const int MaxAmplifyBp = 50_000;
+    /// <summary>CANDIDATE: skill mastery damage permille per level above 1 until Skill.dat level scaling is exported.</summary>
+    public const int SkillLevelDamagePermillePerLevel = 200;
+
+    public static double SkillLevelDamageScale(int skillLevel) =>
+        skillLevel <= 1 ? 1.0 : (10_000 + (skillLevel - 1) * SkillLevelDamagePermillePerLevel) / 10_000.0;
+    public const int TrainingDummyKey = 1000;
+    // NpcData 2400032 M_D1_FV_TraDummy_01_01 (training-dummy model, level 10).
+    public const int SandbagNpcId = 2400032, SandbagLevel = 10;
+
+    /// <summary>Retail TraDummy NPCs (MapData names, sandbag NpcData, dev key 1000) take damage but normally do not die.</summary>
+    public static bool IsTrainingDummy(Target t) =>
+        t.Key == TrainingDummyKey || t.NpcId == SandbagNpcId || t.Name.Contains("TraDummy", StringComparison.OrdinalIgnoreCase);
+
+    /// <summary>HP after a hit; training dummies stay at or above 1 HP unless <paramref name="killAllowed"/>.</summary>
+    public static int HpAfterDamage(Target t, int hpBefore, int damage, bool killAllowed) =>
+        killAllowed || !IsTrainingDummy(t) ? Math.Max(0, hpBefore - damage) : Math.Max(1, hpBefore - damage);
+    // Entity keys: 1 is the player, 1000 the training dummy, map NPCs from 2000.
+    public const int FirstNpcKey = 2000;
+    // Official 0x3641 HP of ordinary NPCs by NpcData level; other levels interpolated.
+    /// <summary>Grade 3 NormalMonster HP by level (units of 133); OBSERVED 2026-10-13 and in the 2026-10-19 recording (tools/world_npcs.py HP_BY_LEVEL).</summary>
+    static readonly SortedDictionary<int, int> HpByLevel = new() { [1] = 133, [3] = 199, [4] = 266, [5] = 399, [6] = 532, [7] = 665, [8] = 798, [9] = 931, [10] = 1064, [15] = 2660, [16] = 3059, [30] = 9975, [45] = 70756 };
+
+    static int Roll(int?[] pair, Random rng)
+    {
+        int low = pair.Length > 0 ? pair[0] ?? 0 : 0, high = pair.Length > 1 ? pair[1] ?? 0 : 0;
+        return rng.Next(Math.Min(low, high), Math.Max(low, high) + 1);
+    }
+
+    public static IReadOnlyList<Hit> SkillHits(GameData data, int skillId, string? className, int level, int? weaponItem,
+        int targetDefense, Random rng, bool pvp = false, int extraFixing = 0, WeaponStats? weaponOverride = null,
+        int amplifyAllBp = 0, int defensePierceBp = 0, int attackAmplifyBp = 0, int extraCritical = 0, int extraAccuracy = 0,
+        int skillLevel = 1, int victimLevel = 0, int critDamageBp = 0)
+    {
+        var definition = data.Skill(skillId);
+        if (definition is null) return [];
+        return RowHits(data, definition.Damage, className, level, weaponItem, targetDefense, rng, pvp, extraFixing, weaponOverride,
+            amplifyAllBp, defensePierceBp, attackAmplifyBp, extraCritical, extraAccuracy, skillLevel, victimLevel, critDamageBp);
+    }
+
+    /// <summary>The hits of explicit Damage rows (a trap's detonation group), by the same model as <see cref="SkillHits"/>.</summary>
+    public static IReadOnlyList<Hit> RowHits(GameData data, IEnumerable<DamageRow> rows, string? className, int level, int? weaponItem,
+        int targetDefense, Random rng, bool pvp = false, int extraFixing = 0, WeaponStats? weaponOverride = null,
+        int amplifyAllBp = 0, int defensePierceBp = 0, int attackAmplifyBp = 0, int extraCritical = 0, int extraAccuracy = 0,
+        int skillLevel = 1, int victimLevel = 0, int critDamageBp = 0)
+    {
+        var weapon = weaponOverride ?? data.WeaponStatsOf(weaponItem);
+        var fixing = data.BaseStats(className, level).GetValueOrDefault("FixingDamage") + extraFixing;
+        var critRating = weapon.Critical + extraCritical;
+        var criticalChance = Math.Min(CriticalCap, critRating / 1000.0);
+        var accuracyRating = Math.Max(0, weapon.Accuracy + extraAccuracy);
+        var mitigatedDefense = Math.Max(0, (int)((long)targetDefense * (10_000 - Math.Clamp(defensePierceBp, 0, 10_000)) / 10_000));
+        mitigatedDefense = Math.Max(0, (int)Math.Round(mitigatedDefense - accuracyRating / (double)AccuracyDefenseDivisor));
+        var totalAmp = Math.Clamp(amplifyAllBp + attackAmplifyBp, -9_000, MaxAmplifyBp);
+        var amplify = (10_000 + totalAmp) / 10_000.0;
+        var skillScale = SkillLevelDamageScale(skillLevel);
+        var levelGapScale = victimLevel > 0 ? LevelDiffDamageScale(level, victimLevel) : 1.0;
+        var critMult = CriticalMultiplier * (1.0 + Math.Max(0, critDamageBp) / 10_000.0);
+        var hits = new List<Hit>();
+        foreach (var row in rows)
+        {
+            // SkillEffectLv.dat replaces the candidate per-level scale when this row names a group.
+            var fromTable = skillLevel > 1 && row.LevelGroup is not null && data.HasEffectLevel(row.LevelGroup);
+            var flat = data.LevelFlat(row, skillLevel, pvp);
+            var ratio = pvp && row.Pvp is { } p ? p.Ratio : row.Ratio;
+            var attack = rng.Next(Math.Min(weapon.Min, weapon.Max), Math.Max(weapon.Min, weapon.Max) + 1) + fixing;
+            double raw = RowDamage(Roll(flat, rng), attack, Roll(ratio, rng), row.HitDivisor);
+            var critical = rng.NextDouble() < criticalChance;
+            if (critical) raw *= critMult;
+            raw *= amplify * (fromTable ? 1.0 : skillScale) * levelGapScale;
+            var amount = Math.Max(1, (int)Math.Round(raw * DefenseScale / (DefenseScale + mitigatedDefense)));
+            hits.Add(new Hit(amount, critical, row.EffectId));
+        }
+        return hits;
+    }
+
+    /// <summary>
+    /// One Damage row before critical, amplify and defense: (flat + attack * ratio / 10000) / divisor.
+    /// Dividing the flat part too is CANDIDATE (recorded ratios fit with or without it).
+    /// </summary>
+    public static double RowDamage(int flat, int attack, int ratio, int divisor) =>
+        (flat + attack * ratio / 10_000.0) / Math.Max(1, divisor);
+
+    /// <summary>
+    /// A skill's end after its start: floor(endMs * 10000 / attackSpeed / 50) * 50 ms.
+    /// OBSERVED for recorded skill/speed pairs (tools/class_skills.py end_fields); the 50 ms steps match the server tick.
+    /// </summary>
+    public static int SkillEndMs(double endMs, int attackSpeed = 10000) =>
+        (int)Math.Floor(endMs * 10000 / Math.Max(1, attackSpeed) / 50) * 50;
+
+    /// <summary>
+    /// One Dot_NormalCalc tick of a player's abnormal on an NPC: flat and ratio as a Damage row
+    /// (SkillAbnormalEffect values [3]/[4] flat, [5]/[6] ratio of 10000), no critical, the target's defense.
+    /// OBSERVED fit (Addiboii/A2Core 74fed9b4): Spiritmaster 1614000011 {148, 15000} ticked 762-804.
+    /// </summary>
+    public static int DotTick(GameData data, string? className, int level, int? weaponItem, int targetDefense, Random rng, int flatMin, int flatMax, int ratioMin, int ratioMax)
+    {
+        var weapon = data.WeaponStatsOf(weaponItem);
+        var attack = rng.Next(Math.Min(weapon.Min, weapon.Max), Math.Max(weapon.Min, weapon.Max) + 1)
+            + data.BaseStats(className, level).GetValueOrDefault("FixingDamage");
+        var flat = rng.Next(Math.Min(flatMin, flatMax), Math.Max(flatMin, flatMax) + 1);
+        var ratio = rng.Next(Math.Min(ratioMin, ratioMax), Math.Max(ratioMin, ratioMax) + 1);
+        var raw = RowDamage(flat, attack, ratio, 1);
+        return Math.Max(1, (int)Math.Round(raw * DefenseScale / (DefenseScale + Math.Max(0, targetDefense))));
+    }
+
+    public const int HpBaseUnit = 133;
+
+    /// <summary>
+    /// HP per level unit by NpcData NpcSubType and Grade, OBSERVED in the 2026-10-19 recording: Grade 1 NormalMonsters 50 (level 7:
+    /// 250, level 8: 300, level 1: 50), Grade 2 75 (150, 225, 375, 450), Grade 3 133 (the curve); the Grade 1 EliteMonster 2290016
+    /// (level 6) 3200 = 800 x 4; the Grade 5 HeroMonster 2701034 (the lake cave boss, level 5) 3000 = 1000 x 3. Elite/Hero units are
+    /// CANDIDATE toned down for near-level comfort until NpcStat HP is wired (official 0x3641 anchors unchanged for grade-3 normals).
+    /// </summary>
+    public static int HpUnit(string subType, int grade) => (subType, grade) switch
+    {
+        ("NormalMonster", 1) => 50,
+        ("NormalMonster", 2) => 75,
+        ("EliteMonster", _) => 600,
+        ("HeroMonster", _) => 700,
+        ("LegendMonster", _) => 1600,
+        _ => HpBaseUnit,
+    };
+
+    /// <summary>CANDIDATE: NPC basic-hit strength as a fraction of the level's Grade-3 HP curve (official captures ~0.075; lowered for dev play).</summary>
+    public const double NpcDamageHpFraction = 0.055;
+
+    /// <summary>CANDIDATE NPC attack baseline (NpcStat.dat not exported): level curve × rank scale, used like FixingDamage with skill ratios.</summary>
+    public static double NpcFixingDamage(int level, string subType, int grade) =>
+        HpForLevel(level) * NpcDamageHpFraction * DamageScale(subType, grade);
+
+    /// <summary>CANDIDATE level-gap modifier when an NPC hits a levelled target (player or NPC).</summary>
+    public static double LevelDiffDamageScale(int attackerLevel, int victimLevel)
+    {
+        var gap = attackerLevel - victimLevel;
+        return Math.Clamp(1.0 + gap * 0.05, 0.35, 1.75);
+    }
+
+    /// <summary>CANDIDATE NPC defense from level and rank (NpcStat.dat not exported). <paramref name="referencePcDefense"/> is PcStatLevel Defense at the same level.</summary>
+    public static int NpcDefense(int level, string subType, int grade, int referencePcDefense)
+    {
+        var scale = (subType, grade) switch
+        {
+            ("NormalMonster", 1) => 0.5,
+            ("NormalMonster", 2) => 0.75,
+            ("EliteMonster", _) => 1.5,
+            ("HeroMonster", _) => 2.0,
+            ("LegendMonster", _) => 2.5,
+            _ => 1.0,
+        };
+        return Math.Max(0, (int)Math.Round(referencePcDefense * scale));
+    }
+
+    /// <summary>
+    /// The NPC's hits against the level's Grade 3 damage by NpcSubType and Grade, OBSERVED (official hits on the player per unit
+    /// of skill factor, all recordings to 2026-10-19): Grade 3 NormalMonsters 0.9-1.0 of the curve (levels 3, 4, 6, 7), Grade 2
+    /// 0.60-0.69 (levels 6, 7, 8: the HQ002 Drakan), Grade 1 0.43-0.46 (levels 7, 8), the Grade 1 EliteMonster 2290016 1.19,
+    /// the Grade 5 HeroMonster 1.0. Live 2026-10-24 the Drakan hit ~1.6x the official. Others: 1 (OURS).
+    /// </summary>
+    public static double DamageScale(string subType, int grade) => (subType, grade) switch
+    {
+        ("NormalMonster", 1) => 0.45,
+        ("NormalMonster", 2) => 0.65,
+        ("EliteMonster", _) => 1.2,
+        _ => 1.0,
+    };
+
+    /// <summary>
+    /// Official NpcData HP for unkillable companions and citizens (Salros, Nania, onlookers). Some quest monsters
+    /// (HQ2102060 Insane Daeva) also carry it while they are still NPC_Companion; once they turn hostile the encounter
+    /// HP from <see cref="HpFor(int,string,int)"/> replaces it so they can be killed.
+    /// </summary>
+    public const int OfficialCompanionHp = 999_999;
+
+    /// <summary>A spawn's HP: an explicit NpcData value (including official 999999 companion HP), else the level curve.</summary>
+    public static int HpFor(NpcSpawn spawn) => spawn.HpMax > 0 ? spawn.HpMax : EncounterHp(spawn.Level, spawn.SubType, spawn.Grade);
+
+    /// <summary>Level-and-rank HP, ignoring an official 999999 companion sentinel.</summary>
+    public static int EncounterHp(int level, string subType, int grade) =>
+        Math.Max(1, (int)Math.Round(HpForLevel(level) * (double)HpUnit(subType, grade) / HpBaseUnit));
+
+    /// <summary>
+    /// A 999999-HP NPC that has become attackable (ChangeRelationshipEntity / a KillNpc step) takes encounter HP.
+    /// Returns whether the pool changed.
+    /// </summary>
+    public static bool TryApplyEncounterHp(Target t)
+    {
+        if (!t.Hostile || t.HpMax != OfficialCompanionHp) return false;
+        var hp = EncounterHp(t.Level, t.SubType, t.Grade);
+        t.HpMax = hp;
+        if (!t.Dead) t.Hp = hp;
+        return true;
+    }
+
+    public static int HpForLevel(int level)
+    {
+        if (HpByLevel.TryGetValue(level, out var hp)) return hp;
+        var known = HpByLevel.Keys.ToList();
+        var low = known.Where(k => k < level).DefaultIfEmpty(known[0]).Max();
+        var high = known.Where(k => k > level).DefaultIfEmpty(known[^1]).Min();
+        if (low == high) return Math.Max(1, (int)Math.Round(HpByLevel[low] * (double)level / low));
+        var t = (level - low) / (double)(high - low);
+        return (int)Math.Round(HpByLevel[low] + t * (HpByLevel[high] - HpByLevel[low]));
+    }
+
+    /// <summary>The sandbag 3 m from the spawn point, facing the player.</summary>
+    public static Target TrainingDummy(Vector3d spawn, int hp = 5000)
+    {
+        var t = new Target
+        {
+            Key = TrainingDummyKey, Name = "Training Dummy", Hp = hp, HpMax = hp, Position = spawn with { X = spawn.X + 300.0 },
+            NpcId = SandbagNpcId, Level = SandbagLevel, Direction = 180.0, SubType = "HeroMonster", Grade = 5,
+        };
+        StaggerGaugeCombat.InitBossGauge(t);
+        return t;
+    }
+
+    /// <summary>When this host started (Unix ms): the start of the NPCs' looping idle animations (official: ~their spawn time).</summary>
+    public static readonly long StartedAt = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
+
+    /// <summary>
+    /// The first NPC key of a map. Small maps (dungeons, story layers) get their own block (20,000 + (map % 70) * 1,000, under
+    /// the players' 100,000), so that consecutive maps do not reuse a key. Live 2026-10-30: the lake cave boss (220018, key 2000) died
+    /// right before the move into the Ascension Subspace (200005), where Ashar was key 2000 as well. The client still finished the
+    /// boss's death on that key after the load and never showed Ashar, although the server sent NpcAppear for him and no later death.
+    /// Big field maps keep 2000.
+    /// </summary>
+    public static int NpcKeyBase(int mapId, int spawnCount) => spawnCount <= SmallMapSpawns ? SmallMapFirstKey + mapId % SmallMapBlocks * SmallMapSpawns : FirstNpcKey;
+    public const int SmallMapFirstKey = 20_000, SmallMapSpawns = 1_000, SmallMapBlocks = 70;
+
+    /// <summary>Every NPC spawn of a map from the client's MapData (tools/world_npcs.py).</summary>
+    public static Dictionary<int, Target> MapTargets(GameData data, int mapId)
+    {
+        var targets = new Dictionary<int, Target>();
+        var spawns = data.Spawns(mapId);
+        var keyBase = NpcKeyBase(mapId, spawns.Count);
+        for (var index = 0; index < spawns.Count; index++)
+        {
+            var spawn = spawns[index];
+            var hp = HpFor(spawn);
+            var key = keyBase + index;
+            targets[key] = new Target
+            {
+                Key = key, Name = spawn.Name, Hp = hp, HpMax = hp, Position = new Vector3d(spawn.Position[0], spawn.Position[1], spawn.Position[2]),
+                NpcId = spawn.NpcId, Level = spawn.Level, Direction = spawn.Yaw, Relationship = spawn.Relationship,
+                Aggressive = spawn.Aggressive, WalkSpeed = spawn.WalkSpeed, RunSpeed = spawn.RunSpeed, Radius = spawn.Radius,
+                Function = spawn.Function, Aggro = spawn.Aggro, Skills = spawn.Skills ?? [], NoRotation = spawn.NoRotation,
+                UniqueKey = spawn.UniqueKey, SocialAction = spawn.SocialAction, SocialStart = spawn.SocialAction != 0 ? StartedAt : 0, Route = spawn.Route,
+                Air = spawn.Air, AirMonster = spawn.Air && spawn.SubType.EndsWith("Monster", StringComparison.Ordinal), DamageScale = DamageScale(spawn.SubType, spawn.Grade),
+                SubType = spawn.SubType, Grade = spawn.Grade, TemplateGroggyMax = spawn.GroggyGuardMax,
+                Defense = NpcDefense(spawn.Level, spawn.SubType, spawn.Grade, data.BaseStats("Gladiator", spawn.Level).GetValueOrDefault("Defense")),
+                Untouchable = spawn.Untouchable, HitCount = spawn.HitCount,
+            };
+            NpcAi.InitGroggy(targets[key]);
+        }
+        return targets;
+    }
+}

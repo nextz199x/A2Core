@@ -35,7 +35,7 @@ except ImportError:
     from usmap_dump import UsmapParser
 
 ROOT = Path(__file__).resolve().parents[1]
-DEFAULT_USMAP = ROOT / "research/local/tooling/mappings/AION2-Global-2.0.12.0-build26728906-native.usmap"
+DEFAULT_USMAP = ROOT / "research/local/tooling/mappings/AION2-Global-2.0.13.0.usmap"
 DEFAULT_OPCODE_MAP = ROOT / "tools/client_opcodes.json"
 
 
