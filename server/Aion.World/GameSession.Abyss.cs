@@ -499,12 +499,13 @@ public sealed partial class GameSession
             if (siege is not null) siege.WriteBattleSchedule(w, battle.Id, now);
             else
             {
-                w.I32(battle.Id).I32(battle.State).I64(0).I64(0).I64(0);
+                // Same 2.0.13 shape as SharedWorld.Airspace.WriteBattleInfo (a2p encoder round trip of #465).
+                w.U8(0).I32(battle.Id).U8(battle.State).I64(0).I64(0);
                 w.Varint(battle.AirspaceIds.Length);
                 foreach (var airspaceId in battle.AirspaceIds)
                 {
-                    w.I32(airspaceId).I32(0);
-                    w.I32(0).I32(0).String("").I32(0).String("");
+                    w.U8(1).I32(airspaceId).U8(battle.State);
+                    w.U16(0).I64(0).String("").U16(0).String("");
                 }
             }
         }

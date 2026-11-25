@@ -145,8 +145,10 @@ public sealed partial class GameSession
 
     static byte[] RewardLimitResetPacket(IReadOnlyList<int> types)
     {
+        // RewardLimitReset_NT carries the reset types as one byte each (a2p decoded `aa ff 01 01` + 3 bytes left when
+        // they were i32), so the entry burst stays byte-exact.
         var w = PacketWriter.Opcode(RewardLimitResetNt).Varint((uint)types.Count);
-        foreach (var t in types) w.I32(t);
+        foreach (var t in types) w.U8(t);
         return w.ToArray();
     }
 

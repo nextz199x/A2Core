@@ -51,7 +51,7 @@ public sealed record GameSessionOptions
     public bool MapEventAskNpcProximityFallback { get; init; } = true;
     /// <summary>Pass Shop / BM premium currency for this connection; null uses the host default from <see cref="GameSession.ConfigureShopOptions"/>.</summary>
     public ShopOptions? Shop { get; init; }
-    /// <summary>BM shop feature layer (Mileage wallet, mail delivery, …); null uses <see cref="GameSession.ConfigureShopFeatures"/>.</summary>
+    /// <summary>BM shop feature layer (Mileage wallet, mail delivery, â€¦); null uses <see cref="GameSession.ConfigureShopFeatures"/>.</summary>
     public ShopFeatureOptions? ShopFeatures { get; init; }
     /// <summary>Aion:Stigmas for this connection (docs/STIGMAS.md); null uses the host default from <see cref="GameSession.ConfigureStigmas"/> (off).</summary>
     public StigmaOptions? Stigmas { get; init; }
@@ -169,6 +169,21 @@ public sealed partial class GameSession(GameData data, GameSessionOptions option
     Task<NavMesh?>? navLoad;
     bool invisible;
     bool reloading;   // a teleport's map load (0x3621 in the world) is pending
+    bool wireV13;     // the live 2.0.13 client entered through 0xC4F6: MyCharAppear uses the 2.0.13 tail
+    List<byte[]>? deferredEntry;   // the 2.0.13 entry's second stage (lists + 0x3621), sent one packet at a time
+    long nextStage2At;             // the next stage-2 packet's due time (300 ms after the entry, then every 50 ms)
+    List<byte[]>? deferredSpawn;   // the local appearance/spawn burst, sent when the client reports LoadComplete (0x6af4)
+    long nextSpawnAt;              // fallback due time when the client never sends 0x6af4
+    byte[]? deferredPrepare;       // 0x3621, sent ~250 ms after the lists like the official 9.829 s frame
+    long nextPrepareAt;
+    /// <summary>The 17 passive abnormals the official 2.0.13 server adds first at the world entry (capture 2026-11-25).</summary>
+    static readonly (int Uid, int Id)[] V13EntryAbnormals =
+    [
+        (1, 12011), (2, 12031), (3, 80001), (4, 110000001), (5, 111700371), (6, 113000371),
+        (7, 113800071), (8, 117100001), (9, 117200001), (10, 117300001), (11, 117400001),
+        (12, 117500001), (13, 117600001), (14, 117700001), (15, 117800001), (16, 117900001),
+        (17, 118000001),
+    ];
     bool sprinting;
     /// <summary>Sitting (CharRestStart_RQ 0x3747 until CharRestStop_RQ 0x374a, a move or combat); recovery is <see cref="RestRegenFactor"/> times faster.</summary>
     public bool Resting { get; private set; }
@@ -367,6 +382,8 @@ public sealed partial class GameSession(GameData data, GameSessionOptions option
         {
             case 0x3613: return await GameLoginAsync(plain, now, ct);
             case 0xD456: return await GameLoginAsync(plain, now, ct);
+            case 0x4BAF: return await GameLoginAsync(plain, now, ct);   // 2.0.13 NPLogin_RQ_v2
+            case 0x8CFD: return await GameLoginAsync(plain, now, ct);   // 2.0.13 world login (live 2026-11-25)
             case 0x3619:
             {
                 var name = NameRequest(plain);
@@ -381,8 +398,12 @@ public sealed partial class GameSession(GameData data, GameSessionOptions option
             case 0x361b: return await CreateAsync(plain, now, ct);
             case 0x361f: return await SelectAsync(plain, now, ct);
             case 0x3C4F: return await SelectWorldAsync(plain, now, ct);
+            case 0x83A9: return await SelectWorldAsync(plain, now, ct, v2: true);   // 2.0.13 SelectCharacter_RQ_v2
+            case 0xC4F6: return await SelectWorldAsync(plain, now, ct, v2: true, order13: true);   // 2.0.13 live SelectCharacter_RQ
             case 0x3622: return await LoadCompleteAsync(plain, now, ct);
+            case 0x6AF4: return await LoadCompleteV13Async(plain, now, ct);   // 2.0.13 LoadComplete_RQ (live 62 B)
             case 0xB24E: return await LoadCompleteWorldAsync(plain, now, ct);
+            case 0x29A7: return await LoadCompleteWorldAsync(plain, now, ct, v2: true);   // 2.0.13 LoadComplete_RQ_v2
             case 0x3630:
                 // Logout_RQ (in-game Exit). Save first: the client disconnects on the reply.
                 await FlushDeferredPersistenceAsync(now, ct);
@@ -556,6 +577,7 @@ public sealed partial class GameSession(GameData data, GameSessionOptions option
             case GatherStopRq when plain.Length >= 3: return GatherStop(plain);
             case CraftStartRq when plain.Length >= 7: return await CraftAsync(plain, ct);
             case ConversionStartRq: return await ConversionStartAsync(plain, ct);
+            case ConversionCancelRq when plain.Length >= 2: return ConversionCancel(now);
             case ConversionLimitListRq when plain.Length >= 2: return await ConversionLimitListAsync(plain, ct);
             case ShopBuyRq when plain.Length >= 4: return await BuyGoodsAsync(plain, now, ct);
             case ShopSellRq when plain.Length >= 4: return await SellItemsAsync(plain, ct);
@@ -1060,7 +1082,7 @@ public sealed partial class GameSession(GameData data, GameSessionOptions option
         return replies;
     }
 
-    // ---------- Inventory (0x5610 → 0x5611; changes as 0x561b) ----------
+    // ---------- Inventory (0x5610 â†’ 0x5611; changes as 0x561b) ----------
 
     /// <summary>Items as last sent to the client, by wire key (for 0x561b differences).</summary>
     readonly Dictionary<long, InventoryItem> inventory = [];
@@ -1357,6 +1379,7 @@ public sealed partial class GameSession(GameData data, GameSessionOptions option
                 var characters = await LobbyCharactersAsync(ct);
                 var races = characters.Select(c => c.Race).Distinct().ToList();
                 accountRole = await StaffRoleAsync(Store.AccountId, ct);
+                FlowLog.Event("character_list", $"count={characters.Count} account={Store.WorldId}");
                 // _server_race: the picked world's race (each world holds one race, as an official server), else the race
                 // of the account's characters (0 when none, CANDIDATE "not chosen"; a new account then saw its own race's
                 // text scrambled).
@@ -1435,7 +1458,7 @@ public sealed partial class GameSession(GameData data, GameSessionOptions option
 
     StarterProfile StoredProfile(CharacterState state)
     {
-        // Persisted race is authoritative; creation id may still be the client's 1–8 class index on Asmodian accounts.
+        // Persisted race is authoritative; creation id may still be the client's 1â€“8 class index on Asmodian accounts.
         var profile = data.Profile(state.CreationId, state.Gender, state.Race);
         return profile is not null && profile.Race == state.Race ? profile : throw new ArgumentException("Persisted character profile is unsupported");
     }
@@ -1585,6 +1608,19 @@ public sealed partial class GameSession(GameData data, GameSessionOptions option
                 if (!candidates.Contains((uint)state.WireId)) throw new ArgumentException("Character identity mismatch");
                 var profile = StoredProfile(state);
                 var savedAt = StoredCharacters.Position(state);
+                // A zero/non-finite saved position (a stuck client reports 0,0,0) spawns the character in the void: use
+                // the map's own start instead (flow 2026-11-26 01:48:29: world_init at 0,0,0, stuck on loading).
+                if (!savedAt.IsFinite || Math.Abs(savedAt.X) + Math.Abs(savedAt.Y) + Math.Abs(savedAt.Z) < 1)
+                {
+                    var stored = savedAt;
+                    savedAt = data.MapStart(state.Progress.MapId ?? GamePackets.SpawnMapId)?.Position ?? GamePackets.SpawnPosition;
+                    // MapStart for the open-world maps is an overview point (Z ~25,000, far from the playfield): the
+                    // client spawns there and falls forever, staying on the loading screen. Map 1010's town ground is
+                    // the point the official server enters at.
+                    if (state.Progress.MapId == 1010 && Math.Abs(savedAt.Z) > 5000)
+                        savedAt = new Vector3d(95539.921875, -191087.828125, 72.0);
+                    FlowLog.Event("spawn_fallback", $"saved={stored} -> {savedAt}");
+                }
                 if (state.Progress.MapId is not > 0) throw new ArgumentException("Saved character has no valid map");
                 selected = state;
                 StaffRole = state.Staff ? accountRole : null;
@@ -1691,35 +1727,169 @@ public sealed partial class GameSession(GameData data, GameSessionOptions option
     /// 0x3C4F SelectCharacter_RQ (2.0.12: position, map id, key) into the existing selection
     /// logic, then the 0xA8F9 SelectCharacter_RS instead of the 2.0.6 0x3620.
     /// </summary>
-    async Task<List<byte[]>> SelectWorldAsync(byte[] plain, long now, CancellationToken ct)
+    async Task<List<byte[]>> SelectWorldAsync(byte[] plain, long now, CancellationToken ct, bool v2 = false, bool order13 = false)
     {
         var reader = new PacketReader(plain) { Offset = 2 };
         int x, y, z, mapId;
         uint key;
         try
         {
-            x = reader.I32(); y = reader.I32(); z = reader.I32();
-            mapId = reader.I32(); key = reader.Varint();
+            if (order13)
+            {
+                // 2.0.13 (0xC4F6, struct order pos -> key -> map_id): live 2026-11-25 body
+                // 00*12 06 00*4 = position 0,0,0, key 6, map 0.
+                x = reader.I32(); y = reader.I32(); z = reader.I32();
+                key = reader.Varint();
+                mapId = reader.I32();
+            }
+            else
+            {
+                x = reader.I32(); y = reader.I32(); z = reader.I32();
+                mapId = reader.I32(); key = reader.Varint();
+            }
         }
         catch (ProtocolException) { return []; }
-
+        FlowLog.Event("select_character", $"key={key} map={mapId} pos={x},{y},{z}");
         var legacy = new PacketWriter().U16(0x361f).Varint(key).I32(mapId).Vec3(new Vector3d(x, y, z)).ToArray();
         var replies = await SelectAsync(legacy, now, ct);
         if (selected is { } state)
         {
-            var world = GamePackets.SelectCharacterWorld((int)key, state.WireId, playerKey, state.Appearance);
+            var world = GamePackets.SelectCharacterWorld((int)key, state.WireId, playerKey, state.Appearance,
+                opcode: v2 ? (ushort)0x2053 : (ushort)0xA8F9, v13: v2);
+            if (v2) world = NativeFraming.CompressedEnvelope(world);
             for (var i = 0; i < replies.Count; i++)
                 if (replies[i].Length >= 2 && (replies[i][0] | replies[i][1] << 8) == 0x3620)
                     replies[i] = world;
+            if (order13)
+            {
+                wireV13 = true;
+                // 2.0.13 merges selection and load, and the official entry arrives as ONE LZ4 bundle whose inner
+                // stream holds the select RS and the whole world-entry state (capture 2026-11-25 13:46:47, 9.444 s).
+                // The 2.0.12 select/PrepareEnterMap frames are dropped for this path.
+                var all = await LoadCompleteAsync(
+                    new PacketWriter().U16(0x3622).I32((int)key).Zeros(12).ToArray(), now, ct);
+                // Stage 1: the official 9.444 s burst (abnormal/achievement/abyss/trade/stat/point) plus the
+                // 9.572 s client-settings echo (0x61a0). Stage 2 (lists, items, skills, spawn) follows on the next
+                // tick as its own bundle, like the official 9.597 s/15.004 s bursts.
+                var stage1 = all.Where(b => EntryPriority(b) < 100).ToList();
+                // The official entry echoes the client settings (0x61a0, 1943 B) at 9.572 s, before the lists. The
+                // client's world init reads them; without them it aborted the load ~4 s after 0x3621 (flow 2026-11-26 01:13:34).
+                stage1.Add(GamePackets.ClientSettings(playerKey, state.WireId, state.Appearance));
+                stage1 = stage1.OrderBy(EntryPriority).ToList();
+                var stage2 = all.Where(b => EntryPriority(b) == 100).ToList();
+                // 2.0.13 has no 0x3623 (its LoadComplete_RS is 0x9651); a known 2.0.12 opcode with the old body
+                // made the client close as soon as stage 2 arrived (flow journal 2026-11-25 23:25:32).
+                stage2.RemoveAll(b => b.Length >= 2 && (b[0] | b[1] << 8) == 0x3623);
+                // SelectAsync's non-select replies: ClientEnvSetting_NT (0x8d44) goes right after the state burst
+                // (official 9.597 s, first entry list) and PrepareEnterMap_NT (0x3621) is the last one (official 9.829 s).
+                // Sending 0x3621 before the state made the client close, and so did a late 0x8d44 (flow 2026-11-25 23:43:24).
+                var selectExtras = replies.Where(b => b.Length >= 2 && (b[0] | b[1] << 8) is 0x8d44 or 0x3621).ToList();
+                replies.Clear();
+                // The official 2.0.13 capture has neither a SelectCharacter_RS (0x2053) nor a LoadComplete_RS (0x9651):
+                // the entry burst answers the select and the spawn burst answers 0x6af4. The replay that reached the
+                // world sent exactly that sequence, so keep our generated entry to the same frames.
+                // Plain frames instead of an LZ4 bundle: the client closed on large bundles produced by our encoder
+                // (0xffff 17072 B at 2026-11-26 00:39:54) while the same frames passed individually.
+                replies.AddRange(stage1);
+                foreach (var extra in selectExtras.Where(b => (b[0] | b[1] << 8) == 0x8d44)) replies.Add(extra);
+                // The official entry is a pair of LZ4 bundles and a standalone PrepareEnterMap_NT: the lists go as one
+                // bundle (official 9.597 s), then 0x3621 alone (9.829 s), then the spawn burst (15.004 s). Dripping the
+                // lists/spawn one packet per tick worked but took 10 s, and the client closed at +6.6 s after 0x3621
+                // with the spawn still streaming (flow 2026-11-26 00:33:25).
+                var spawnBurst = stage2.Where(EntryAfterLoad).OrderBy(SpawnPriority).ToList();
+                // The 2.0.13 client hangs on the loading screen when our 0x3634 env objects arrive with the spawn (the
+                // 2.0.12 map data has objects the 2.0.13 client rejects). Send none at entry until the data is ported.
+                spawnBurst.RemoveAll(b => b.Length >= 2 && (b[0] | b[1] << 8) == 0x3634);
+                // The official spawn burst repeats the state packets (abyss/abnormals/stats/points) after LoadComplete;
+                // sending them only in the pre-load keeps the client's pawn uninitialised on some runs.
+                spawnBurst.AddRange(stage1.Where(b => b.Length >= 2 &&
+                    (b[0] | b[1] << 8) is 0xffab or 0x382a or 0x364a or 0x3656 or 0x8d00));
+                spawnBurst = spawnBurst.OrderBy(SpawnPriority).ToList();
+                var lists = stage2.Where(b => !EntryAfterLoad(b)).ToList();
+                FlowLog.Event("entry_queue", Describe(lists));
+                FlowLog.Event("spawn_queue", Describe(spawnBurst));
+                var appear = spawnBurst.FirstOrDefault(b => b.Length >= 2 && (b[0] | b[1] << 8) == 0x3633);
+                if (appear is not null) FlowLog.Dump("3633", appear);
+                // The official entry reaches the client as separate bursts: the state at 9.444 s, the lists at 9.597 s
+                // and PrepareEnterMap_NT at 9.829 s (0.385 s after the first burst). Sending everything in one write let
+                // the client sit on the loading screen; the reference replay that reached the world kept those gaps.
+                deferredEntry = lists;
+                deferredPrepare = selectExtras.FirstOrDefault(b => b.Length >= 2 && (b[0] | b[1] << 8) == 0x3621);
+                nextStage2At = now + 150;   // first tick after 150 ms sends the lists
+                nextPrepareAt = 0;
+                deferredSpawn = spawnBurst;
+                nextSpawnAt = 0;            // the first tick after 0x3621 starts the map-load wait
+            }
         }
         return replies;
     }
+
+    /// <summary>The official 2.0.13 entry order: abnormal/achievement/abyss/trade/stat/point packets first.</summary>
+    static int EntryPriority(byte[] body) => body.Length >= 2 ? (body[0] | body[1] << 8) switch
+    {
+        0x382a => 0, 0x5684 => 1, 0xffab => 2, 0xe263 => 3,
+        0x364a => 4, 0x3656 => 5, 0x8d00 => 6, 0xe25a => 7, 0x61a0 => 8,
+        _ => 100,
+    } : 100;
+
+    /// <summary>
+    /// Packets the official server sends in the post-LoadComplete burst (15.004 s), not before PrepareEnterMap_NT
+    /// (its 9.444-9.8 s state). The skill list, hotbar, social actions, rides and the map environment only arrive
+    /// after the map load in 2.0.13; sending them earlier made the client sit on the loading screen.
+    /// </summary>
+    static bool EntryAfterLoad(byte[] body) => body.Length >= 2 && (body[0] | body[1] << 8) is
+        0x3633 or 0x3634 or 0x3641 or 0x3746 or 0x3646 or 0x3657 or 0x4001 or 0x4002 or 0xe223 or 0x6000 or 0x561e
+        or 0x5100 or 0x3900 or 0x9501 or 0x5600 or 0x9000 or 0x400a or 0xe251 or 0xe200 or 0xffab;
+
+    /// <summary>The official 15.004 s spawn-burst order (capture 2026-11-25 13:46:47, frames 392-422).</summary>
+    static int SpawnPriority(byte[] body) => body.Length >= 2 ? (body[0] | body[1] << 8) switch
+    {
+        0x3746 => 0, 0x5100 => 1, 0x3900 => 2, 0x9501 => 3, 0x5600 => 4, 0xe251 => 5,
+        0x400a => 6, 0x9000 => 7, 0xe200 => 8, 0xffab => 9, 0x3633 => 10, 0x3646 => 11,
+        0xe223 => 12, 0x6000 => 13, 0x382a => 14, 0x364a => 15, 0x3657 => 16, 0x8d00 => 17,
+        0x4001 => 18, 0x4002 => 19, 0x561e => 20, _ => 100,
+    } : 100;
+
+    /// <summary>The opcode/size list of a deferred entry queue, for the flow journal.</summary>
+    static string Describe(IEnumerable<byte[]> queue) =>
+        string.Join(" ", queue.Select(b => b.Length >= 2 ? $"{(b[0] | b[1] << 8):x4}/{b.Length}" : $"?/{b.Length}"));
+
+    /// <summary>
+    /// 0x6AF4 LoadComplete_RQ (2.0.13, live 62 B): the client finished loading the map and waits for the world state.
+    /// The official server answers with the entry spawn burst ~200 ms later (capture 2026-11-25 13:46:47: 0x6af4 at
+    /// 14.807 s, spawn at 15.004 s) and sends no LoadComplete_RS at all. Until this was handled the client sat on the
+    /// loading screen forever, and a spawn sent before the request was lost.
+    /// </summary>
+    async Task<List<byte[]>> LoadCompleteV13Async(byte[] plain, long now, CancellationToken ct)
+    {
+        FlowLog.Event("load_complete_v13", $"{plain.Length} B");
+        FlowLog.Dump("6af4", plain);
+        var replies = new List<byte[]>();
+        // The official 2.0.13 server sends no LoadComplete_RS (0x9651): the spawn burst itself answers 0x6af4.
+        // It does send 0xd79e (server enter-map position) right before the burst -- every capture that reached the
+        // world has it, and ours never did. Without it the client keeps the loading screen even after a valid spawn.
+        replies.Add(GamePackets.ServerEnterMapPos(position ?? spawn?.Position ?? GamePackets.SpawnPosition));
+        // The official 2.0.13 server sends no LoadComplete_RS (0x9651): the spawn burst itself answers 0x6af4.
+        // It does send 0xd79e (server enter-map position) 58 ms before the burst — every capture that reached the
+        // world has it, and ours never did.
+        replies.Add(GamePackets.ServerEnterMapPos(position ?? spawn?.Position ?? GamePackets.SpawnPosition));
+        if (deferredSpawn is { Count: > 0 } burst)
+        {
+            FlowLog.Event("spawn_sent", $"{burst.Count} packets, {burst.Sum(b => b.Length)} B");
+            replies.AddRange(burst);
+            // The official burst ends with a target update (0x3835, the char with no target) after the last stat set.
+            replies.Add(GamePackets.TargetUpdate(playerKey));
+            deferredSpawn = null;
+        }
+        return replies;
+    }
+
 
     /// <summary>
     /// 0xB24E LoadComplete_RQ (2.0.12) into the existing load logic, then the 0x4EF8
     /// LoadComplete_RS instead of the 2.0.6 0x3623.
     /// </summary>
-    async Task<List<byte[]>> LoadCompleteWorldAsync(byte[] plain, long now, CancellationToken ct)
+    async Task<List<byte[]>> LoadCompleteWorldAsync(byte[] plain, long now, CancellationToken ct, bool v2 = false)
     {
         var reader = new PacketReader(plain) { Offset = 2 };
         int ticket;
@@ -1736,10 +1906,11 @@ public sealed partial class GameSession(GameData data, GameSessionOptions option
         }
         catch (ProtocolException) { return []; }
 
+        FlowLog.Event("load_complete", $"ticket={ticket}");
         var legacy = new PacketWriter().U16(0x3622).I32(ticket).Zeros(12).ToArray();
         var replies = await LoadCompleteAsync(legacy, now, ct);
         var at = position ?? clientPosition;
-        var world = GamePackets.LoadCompleteWorld(ticket, playerKey, at);
+        var world = GamePackets.LoadCompleteWorld(ticket, playerKey, at, opcode: v2 ? (ushort)0x9651 : (ushort)0x4EF8);
         for (var i = 0; i < replies.Count; i++)
             if (replies[i].Length >= 2 && (replies[i][0] | replies[i][1] << 8) == 0x3623)
                 replies[i] = world;
@@ -1772,6 +1943,7 @@ public sealed partial class GameSession(GameData data, GameSessionOptions option
             kit = data.WithChainVariantsOnHotbar(WithLevels(kit), profile, MasteryLevel);
         learned = kit.Select(k => k.SkillId).ToHashSet();
         var (mapId, at) = spawn ?? (GamePackets.SpawnMapId, GamePackets.SpawnPosition);
+        FlowLog.Event("world_init", $"map={mapId} at={at}");
         if (!IsInstanceMap(mapId) && instanceKey != 0) instanceKey = 0;
         EnsureAbyssLoaded(now);
         var previousMap = worldMap;
@@ -1877,7 +2049,19 @@ public sealed partial class GameSession(GameData data, GameSessionOptions option
             replies.Add(resources.Maxima());
         }
         RecomputeCombatPower();
-        replies.Add(GamePackets.MyCharAppear(new MyCharacterAppear
+        // The official 2.0.13 entry sends CharCombatPowerUpdate_NT (0x3656) right before CharPointUpdate
+        // (capture 2026-11-25 13:46:47, frame 159); 2.0.12 only sent it when the value changed.
+        replies.Add(CharCombatPowerUpdate());
+        // 2.0.13 also sends NCGuardData_RS (0xe25a) during the entry (official frame 177 at 9.572 s).
+        if (wireV13)
+        {
+            replies.Add(GamePackets.NcGuardData());
+            // The 17 passive abnormals the official server adds first (frames 138-154 at 9.444 s).
+            foreach (var (uid, abnormalId) in V13EntryAbnormals)
+                replies.Add(PlayerPackets.AbnormalAdd(playerKey,
+                    [new AbnormalWire(uid, abnormalId, -1, 4102412400000, CasterKey: playerKey, Level: 1, RangeBase: at)]));
+        }
+        var appear = GamePackets.MyCharAppear(new MyCharacterAppear
             {
                 ToggleFlags = sealStoneOn ? 1 : 0,
                 Key = playerKey, Name = CharacterNames.Display(name, StaffRole), Gender = gender, MapId = mapId, Position = at, PcId = profile?.PcId ?? 1, Race = profile?.Race ?? 1,
@@ -1890,7 +2074,11 @@ public sealed partial class GameSession(GameData data, GameSessionOptions option
                 Relationship = (byte)((profile?.Race ?? 1) == 2 ? 2 : 1),
                 // The real pools (PcStatLevel + gear + buffs); the 1500/200 defaults made the bar read e.g. 4000/1500.
                 Hp = resources.Hp, HpMax = resources.HpMax, Mp = resources.Mp, MpMax = resources.MpMax,
-                Equips = VisualEquips(all: false),
+                Equips = VisualEquips(all: wireV13),
+                Abnormals = wireV13
+                    ? V13EntryAbnormals.Select(e => new AbnormalWire(e.Uid, e.Id, -1, 4102412400000,
+                        CasterKey: playerKey, Level: 1, RangeBase: at)).ToArray()
+                    : [],
                 CustomizingData = character?.CustomizingData ?? [], VoiceType = character?.VoiceType ?? 0,
                 Ascension = selected?.Ascension ?? 1, DbId = selected?.WireId ?? 0,
                 SpentSkillPoints = SpentSkillPoints(), SpentStigmaPoints = StigmasOn ? StigmaShardsSpent : 0,
@@ -1899,9 +2087,11 @@ public sealed partial class GameSession(GameData data, GameSessionOptions option
                 EquipItemLevel = armed, HighestTotalItemLevel = armed,
                 CombatPower = combatPower,
                 SubzoneId = Subzones.SubzoneIdAt(mapId, at),
+                V13 = wireV13,
                 UsedDaevanionPoints = DaevanionUsedPointWire(),
                 BonusDaevanionPoints = DaevanionBonusPointWire(),
-            }));
+            });
+        replies.Add(appear);
         replies.Add(GamePackets.CharBarrier(playerKey));
         replies.AddRange(SealStoneAtLoad());   // the Power Shard slot and toggle again on every map load (teleports included)
         replies.Add(GamePackets.CharStatsUpdate(playerKey, StatSheet().Stats, resources.HpMax));
@@ -1993,6 +2183,10 @@ public sealed partial class GameSession(GameData data, GameSessionOptions option
                 RefreshWireClientSkillList(WithSpecialized(WithStigmas(leveledKit)));
                 var skillList = WireSkillListPacket();
                 replies.Add(skillList);
+                // The official entry also adds every learned skill explicitly (0x380f, 15 frames at 9.638 s). Without
+                // them the client's skill state stays empty during the world load.
+                foreach (var skill in WithSpecialized(WithStigmas(leveledKit)))
+                    replies.Add(SkillAdd(skill.SkillId, skill.Level, 0));
                 LogSkillPointsAtEntry();
                 replies.AddRange(SkillPointSpendBaselineSeeds());
                 replies.Add(SkillPointUpdate());
@@ -3258,6 +3452,32 @@ public sealed partial class GameSession(GameData data, GameSessionOptions option
         batchAchievementCountUpdates = true;
         achievementCountBatch.Clear();
         var replies = new List<byte[]>();
+        if (deferredEntry is { Count: > 0 } stage2 && now >= nextStage2At)
+        {
+            // Whole list burst in one write (official 9.597 s), then a short gap before PrepareEnterMap_NT (official
+            // 9.829 s). The gaps are what the client expects; one combined write kept it on the loading screen.
+            replies.AddRange(stage2);
+            deferredEntry = null;
+            nextPrepareAt = now + 250;
+        }
+        else if (deferredEntry is null && deferredPrepare is { } prepare && now >= nextPrepareAt)
+        {
+            replies.Add(prepare);
+            deferredPrepare = null;
+        }
+        else if (deferredEntry is null && deferredPrepare is null && deferredSpawn is { Count: > 0 } burst)
+        {
+            // The spawn is normally the answer to 0x6af4 LoadComplete_RQ (see LoadCompleteV13Async); this timer is only
+            // a fallback for a client that never sends it.
+            if (nextSpawnAt == 0) nextSpawnAt = now + 12000;
+            else if (now >= nextSpawnAt)
+            {
+                // Same reasoning as the lists: plain frames, one burst, rather than an LZ4 bundle.
+                FlowLog.Event("spawn_sent", $"{burst.Count} packets, {burst.Sum(b => b.Length)} B");
+                replies.AddRange(burst);
+                deferredSpawn = null;
+            }
+        }
         while (posted.TryDequeue(out var item)) replies.AddRange(await item.Run(now));
         replies.AddRange(IdleReturnTick(now));
         if (arrivalCheckDue && !reloading && position is { } arrivedAt)
@@ -3520,6 +3740,9 @@ public sealed partial class GameSession(GameData data, GameSessionOptions option
         {
             await FlushPendingInstanceReturnAsync(ct);
             if (position is not { } at) return;
+            // Never persist the void: a client stuck on the loading screen reports 0,0,0, and the next login then
+            // spawns the character at the map origin (flow 2026-11-26 01:48:29 world_init at 0,0,0).
+            if (!at.IsFinite || Math.Abs(at.X) + Math.Abs(at.Y) + Math.Abs(at.Z) < 1) return;
             var staleMap = selected.Progress.MapId != worldMap;
             if (!force && now < checkpointAt && !staleMap) return;
             if (at == savedPosition && !staleMap) return;

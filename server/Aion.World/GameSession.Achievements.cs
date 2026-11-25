@@ -617,6 +617,20 @@ public sealed partial class GameSession
     internal static bool CategoryMatches(byte category, string groupCategory) =>
         category == 0 || CategoryOrdinal(groupCategory) == category;
 
+    /// <summary>
+    /// Whether an achievement may be claimed inside a batch. Collect-all in a concrete group (non-zero group id from the
+    /// client) must not go through <see cref="Listed"/> — attendance tabs send one batch RQ per AchievementGroup id
+    /// (0x07EF..), and only the latest open board is listed in the achievement window at once.
+    /// </summary>
+    internal bool BatchEntryEligible(AchievementTables.Entry entry, int scopedGroupId, byte category, long now)
+    {
+        if (!AchievementIdMatchesRace(entry.Id, profileRace)) return false;
+        if (Achievements.GroupOf(entry) is not { } group || (group.Race != 0 && group.Race != profileRace)) return false;
+        if (scopedGroupId != 0) return group.Id == scopedGroupId;
+        if (!CategoryMatches(category, group.Category)) return false;
+        return Listed(entry, now);
+    }
+
     IReadOnlyList<int> BatchClaimGroupIds(int groupId, byte category) =>
         groupId != 0
             ? [groupId]
@@ -631,6 +645,8 @@ public sealed partial class GameSession
         var category = plain[2];
         var groupId = BitConverter.ToInt32(plain, 3);
         var only = plain[7] != 0;
+        var checkIn = BatchIncludesAttendance(groupId, category) ? CheckInOpenAttendanceBoards(now) : [];
+        if (checkIn.Count > 0) await FlushAchievementsAsync(now, ct, force: true);
         var results = new List<(int Group, List<byte> GroupSteps, Dictionary<int, int> Steps)>();
         var rewardItems = new List<int>();
         var attendanceAchievements = Achievements.Boards.Select(b => b.Achievement).ToHashSet();
@@ -643,7 +659,7 @@ public sealed partial class GameSession
             var groupSteps = new List<byte>();
             foreach (var entry in Achievements.InGroup(gid))
             {
-                if (!Listed(entry, now)) continue;
+                if (!BatchEntryEligible(entry, groupId, category, now)) continue;
                 for (var step = (achievements.GetValueOrDefault(entry.Id)?.RewardedStep ?? 0) + 1; step <= entry.Steps.Length; step++)
                 {
                     var taken = await TakeStepAsync(entry.Id, step, now, ct, syncInventory: false, logSource: "batch");
@@ -683,6 +699,7 @@ public sealed partial class GameSession
         // Official claim-all (capture 001158): 0x561b inventory deltas, one 0x5684 for claimed steps, then TakeAchievementRewardBatch_RS.
         // Trailing 0x5683 after the batch reply still empties the "Rewards Collected" popup; do not resend the full list.
         var batch = new List<byte[]>();
+        batch.AddRange(checkIn);
         if (inventoryChanges.Count > 0) batch.AddRange(inventoryChanges);
         if (claimedAchievementIds.Count > 0) batch.Add(AchievementUpdate(claimedAchievementIds));
         // Attendance tabs redraw their claim state from the achievement list; the count update alone left the tab's
@@ -801,14 +818,14 @@ public sealed partial class GameSession
 
     internal static byte[] AccountContentsInfoList(int race, int serverId, long charDbId, long now, Func<int, (int CheckDay, int RewardDay)> state)
     {
-        var keyed = LatestAttendanceSeasons(race, now).Where(e => e.Board.SeasonGroupId != 0).ToList();
-        var w = PacketWriter.Opcode(AccountContentsInfoListNt).Varint((uint)keyed.Count);
-        foreach (var (type, board) in keyed)
-        {
-            var (checkDay, rewardDay) = state(board.Achievement);
-            w.U8(type).I32(board.SeasonGroupId).I32(board.SeasonNo).I32(serverId).I64(charDbId).I32(checkDay).I32(rewardDay);
-        }
-        return w.ToArray();
+        // The official entry sends the empty list (`b6 56 00`); the entry layout with items still desyncs (a2p leaves
+        // bytes), and a bad packet inside the entry burst stalls the world load. Send the known-good empty list.
+        _ = race;
+        _ = serverId;
+        _ = charDbId;
+        _ = now;
+        _ = state;
+        return PacketWriter.Opcode(AccountContentsInfoListNt).Varint(0).ToArray();
     }
 
     /// <summary>
@@ -818,7 +835,8 @@ public sealed partial class GameSession
     /// Taking it at check-in left the collect with nothing to claim, so 0x568a reported result 1 and the tab showed
     /// "please try again later". Attendance_RS is opcode + _result u16 (0 success).
     /// </summary>
-    async Task<List<byte[]>> AttendanceAsync(long now, CancellationToken ct)
+    /// <summary>Today's check-in on every open board (one game day each); the claim paths call it too, so a tab's Collect works without a prior 0xe34d.</summary>
+    List<byte[]> CheckInOpenAttendanceBoards(long now)
     {
         var checkIn = new List<byte[]>();
         var today = CycleStart(1, now);
@@ -831,6 +849,17 @@ public sealed partial class GameSession
             if (state.CompletedMs == 0) state.CompletedMs = now;
             checkIn.AddRange(Achieve("Attendance", 1, e => e.Id == board.Achievement, now));
         }
+        return checkIn;
+    }
+
+    /// <summary>Whether a batch claim may touch attendance tab achievements and needs a check-in first.</summary>
+    bool BatchIncludesAttendance(int groupId, byte category) =>
+        CategoryOrdinal("Attendance") == category
+        || BatchClaimGroupIds(groupId, category).Any(gid => Achievements.GroupById(gid) is { Category: "Attendance" });
+
+    async Task<List<byte[]>> AttendanceAsync(long now, CancellationToken ct)
+    {
+        var checkIn = CheckInOpenAttendanceBoards(now);
         if (checkIn.Count > 0) await FlushAchievementsAsync(now, ct, force: true);
 
         var batch = new List<byte[]> { PacketWriter.Opcode(AttendanceRs).U16(0).ToArray() };
