@@ -70,4 +70,5 @@ server/Aion.Host/wwwroot/apple-touch-icon.png
 
 # Local task notes (kept on disk, never tracked or committed)
 /docs/CURRENT_TASK.md
+/docs/TODO_TASK.md
 /TODO_TASK.md
