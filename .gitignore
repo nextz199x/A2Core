@@ -1,0 +1,69 @@
+__pycache__/
+*.pyc
+.venv/
+_transfer/
+tools/AssetProbe/bin/
+tools/AssetProbe/obj/
+tools/WorldProbe/bin/
+tools/WorldProbe/obj/
+tools/TerrainProbe/bin/
+tools/TerrainProbe/obj/
+tools/NavProbe/bin/
+tools/NavProbe/obj/
+.aider*
+server/**/bin/
+server/**/obj/
+tests/Aion.Server.Checks/bin/
+tests/Aion.Server.Checks/obj/
+tests/Aion.Persistence.Checks/bin/
+tests/Aion.Persistence.Checks/obj/
+tests/Aion.Authentication.Checks/bin/
+tests/Aion.Authentication.Checks/obj/
+tests/**/bin/
+tests/**/obj/
+tools/WardrobeExport/bin/
+tools/WardrobeExport/obj/
+tools/MapImageExport/bin/
+tools/MapImageExport/obj/
+tools/Aion.HeadlessClient/bin/
+tools/Aion.HeadlessClient/obj/
+tools/Aion.HeadlessClient.Protocol/bin/
+tools/Aion.HeadlessClient.Protocol/obj/
+
+# React pages (web/) build into the host wwwroot; wardrobe-viewer.js there stays hand-written.
+web/node_modules/
+web/test-results/
+server/Aion.Host/wwwroot/account.html
+server/Aion.Host/wwwroot/account/
+server/Aion.Host/wwwroot/landing/
+server/Aion.Host/wwwroot/index.html
+server/Aion.Host/wwwroot/admin.html
+server/Aion.Host/wwwroot/assets/
+launcher/**/bin/
+launcher/**/obj/
+editor/**/bin/
+editor/**/obj/
+tools/AionClientProbe/bin/
+tools/AionClientProbe/obj/
+
+# The server data bundle is a release download (too large for the repository): place it in data/.
+/data/
+# Raw extractions and the client archive key stay local (bring your own).
+/research/local/*
+!/research/local/tooling/
+/research/local/tooling/*
+!/research/local/tooling/opcodes.json
+!/research/local/tooling/mappings/
+
+# Local Windows deploy launcher (machine-specific; never commit).
+/deploy/windows/start.ps1
+
+# Gamers4Life parity crawler cache (tools/audit_gamers4life.py)
+tools/.cache/gamers4life/
+server/Aion.Host/wwwroot/favicon.png
+server/Aion.Host/wwwroot/apple-touch-icon.png
+/aion-server-data.tar.gz
+
+# Local task notes (kept on disk, never tracked or committed)
+/docs/CURRENT_TASK.md
+/TODO_TASK.md
