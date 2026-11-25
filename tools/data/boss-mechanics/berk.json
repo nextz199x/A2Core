@@ -1,0 +1,247 @@
+{
+  "$schema": "../boss-mechanics.schema.json",
+  "id": "krao_cave_berk",
+  "display": "Ultimate Berk",
+  "display_ru": "Берк",
+  "dungeon": "KraoCave",
+  "source": "official-overlay (boss-phases.json rotation and phases) + CANDIDATE mechanics from expedition-boss-mechanics.json",
+  "note": "Wave of Fury at 75% and 25%: a stone pillar rises between Berk and his target; only players in its shadow escape. Extinction for Eternity at 50%: break the stagger gauge during the 8 s cast.",
+  "npcs": {
+    "Easy": [2310171],
+    "Normal": [2300171],
+    "Hard": [2320171]
+  },
+  "vars": {
+    "frenzy_ms": 300000,
+    "pillar_offset": 1200,
+    "cover_depth": 900,
+    "cover_width": 1400
+  },
+  "rotation": [
+    {
+      "type": "cast",
+      "skill": 1800060,
+      "every_ms": 20000,
+      "wind_up_ms": 2000,
+      "radius": 5600,
+      "warning": "Ultimate Berk draws a cross: move out of the beams!",
+      "warning_ru": "Берк чертит крест: выйдите из лучей!"
+    },
+    {
+      "type": "cast",
+      "skill": 1800030,
+      "every_ms": 15000,
+      "wind_up_ms": 2000,
+      "radius": 3700,
+      "warning": "Ultimate Berk slashes a line: get behind him or out of the strip!",
+      "warning_ru": "Берк бьёт полосой: зайдите за спину или отойдите в сторону!"
+    },
+    {
+      "type": "cast",
+      "skill": 1800040,
+      "every_ms": 15000,
+      "wind_up_ms": 2500,
+      "radius": 2000,
+      "warning": "Ultimate Berk slams the ground: walk out of the circle!",
+      "warning_ru": "Берк бьёт по земле: выйдите из круга!"
+    }
+  ],
+  "rules": [
+    {
+      "id": "wave_of_fury_75",
+      "when": {
+        "type": "hp_below",
+        "pct": 75
+      },
+      "do": [
+        {
+          "type": "cover",
+          "id": "stone_pillar",
+          "at": "boss",
+          "toward": "victim",
+          "distance": "$pillar_offset",
+          "length": "$cover_depth",
+          "width": "$cover_width",
+          "env_obj": 1400623,
+          "skill": 1800050,
+          "note": "Lasts until the next Wave of Fury replaces it (as before)."
+        },
+        {
+          "type": "cast",
+          "skill": 1800050,
+          "wind_up_ms": 6000,
+          "radius": 4500,
+          "once": true,
+          "warning": "Wave of Fury — hide behind the stone pillar!",
+          "warning_ru": "Волна ярости — спрячьтесь за каменным столбом!",
+          "cover": true
+        },
+        {
+          "type": "notice",
+          "text": "Wave of Fury — hide behind a stone pillar!",
+          "text_ru": "Волна ярости — спрячьтесь за каменным столбом!"
+        }
+      ]
+    },
+    {
+      "id": "extinction_50",
+      "when": {
+        "type": "hp_below",
+        "pct": 50
+      },
+      "do": [
+        {
+          "type": "cast",
+          "skill": 1800140,
+          "wind_up_ms": 8000,
+          "radius": 9000,
+          "once": true,
+          "stagger_check": true,
+          "warning": "Extinction for Eternity — break the stagger gauge!",
+          "warning_ru": "Вымирание навеки — сбейте шкалу стаггера!"
+        },
+        {
+          "type": "notice",
+          "text": "Extinction for Eternity — break the stagger gauge before the cast ends!",
+          "text_ru": "Вымирание навеки — сбейте шкалу стаггера, пока длится каст!"
+        }
+      ]
+    },
+    {
+      "id": "wave_of_fury_25",
+      "when": {
+        "type": "hp_below",
+        "pct": 25
+      },
+      "do": [
+        {
+          "type": "cover",
+          "id": "stone_pillar",
+          "at": "boss",
+          "toward": "victim",
+          "distance": "$pillar_offset",
+          "length": "$cover_depth",
+          "width": "$cover_width",
+          "env_obj": 1400623,
+          "skill": 1800050,
+          "note": "Lasts until the next Wave of Fury replaces it (as before)."
+        },
+        {
+          "type": "cast",
+          "skill": 1800050,
+          "wind_up_ms": 6000,
+          "radius": 4500,
+          "once": true,
+          "warning": "Wave of Fury — hide behind the stone pillar!",
+          "warning_ru": "Волна ярости — спрячьтесь за каменным столбом!",
+          "cover": true
+        },
+        {
+          "type": "notice",
+          "text": "Wave of Fury — hide behind a stone pillar!",
+          "text_ru": "Волна ярости — спрячьтесь за каменным столбом!"
+        }
+      ]
+    },
+    {
+      "id": "whirlwind",
+      "when": {"type": "timer", "after_ms": 25000, "every_ms": 40000},
+      "do": [
+        {
+          "type": "notice",
+          "text": "Whirlwind! Red dust: back off and stop attacking while he chases his target!",
+          "text_ru": "Вихрь! Красная пыль: отойдите и прекратите атаки, пока он гонится за целью!"
+        },
+        {
+          "type": "repeat",
+          "every_ms": 250,
+          "delay_ms": 2000,
+          "count": 24,
+          "do": [
+            {
+              "type": "telegraph",
+              "at": "boss",
+              "shape": "circle",
+              "radius": 1200,
+              "delay_ms": 0,
+              "decal": false,
+              "damage": {"factor": [11000, 12000]},
+              "on_hit": [
+                {
+                  "type": "debuff",
+                  "debuff": "whirlwind_dot",
+                  "target": "event_player",
+                  "abnormal": 12000151,
+                  "duration_ms": 20000
+                }
+              ]
+            }
+          ]
+        }
+      ],
+      "note": "Client: 1800170 (2 s cast, 40 s cooldown) gives Berk a 6 s buff that casts 1800160 every 250 ms: circle 1200, 11000-12000 and a 20 s DoT (ab12000151). The boss does not spin after a target here: the circle follows him."
+    },
+    {
+      "id": "rocks_50",
+      "when": {"type": "hp_below", "pct": 50},
+      "do": [
+        {"type": "phase", "phase": "rocks"}
+      ],
+      "note": "CANDIDATE (research, likely): below 50% rocks erupt across the map, little damage, brief root."
+    },
+    {
+      "id": "rocks",
+      "when": {"type": "timer", "after_ms": 6000, "every_ms": 14000, "from": "phase"},
+      "phase": ["rocks"],
+      "do": [
+        {
+          "type": "telegraph",
+          "at": "random_player",
+          "shape": "circle",
+          "radius": 350,
+          "delay_ms": 1500,
+          "decal": true,
+          "count": 2,
+          "interval_ms": 700,
+          "damage": {"factor": [3000, 3000]},
+          "on_hit": [
+            {
+              "type": "debuff",
+              "debuff": "rock_root",
+              "target": "event_player",
+              "abnormal": 12000021,
+              "duration_ms": 1000
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "frenzy",
+      "when": {
+        "type": "enrage_timer",
+        "after_ms": "$frenzy_ms"
+      },
+      "difficulty": ["Normal", "Hard"],
+      "do": [
+        {
+          "type": "enrage",
+          "damage_mul": 2.0,
+          "haste_mul": 0.5,
+          "text": "Ultimate Berk goes into a frenzy!",
+          "text_ru": "Берк впадает в неистовство!"
+        }
+      ]
+    }
+  ],
+  "difficulty": {
+    "Easy": {
+      "note": "Exploration: no enrage timer."
+    },
+    "Hard": {
+      "vars": {
+        "frenzy_ms": 240000
+      }
+    }
+  }
+}

@@ -1,0 +1,32 @@
+{
+  "source": "Built by tools/pc_zones.py from a local client export (2026-11-22)",
+  "zones": {
+    "15280000": {
+      "name": "Bittercold Wind",
+      "npc": 2920011,
+      "lifetime_ms": 10000,
+      "tick_ms": 1000,
+      "radius": 400,
+      "max": 4,
+      "damage": {
+        "flat": [
+          238,
+          238
+        ],
+        "ratio": [
+          23225,
+          23225
+        ],
+        "effect_id": 1528000211,
+        "value4": "7",
+        "level_group": "Sorcerer_Skill028_LvUp"
+      },
+      "notes": {
+        "source": "client export 2026-11-22",
+        "spawn_lifetime_ms": "Spawn EffectValueList[7] = 0, 10000",
+        "damage": "SkillEffect group 152800021 Damage row 1528000211",
+        "tick_ms": "marker pulse NeedCoolTime when >= 250 ms else 1000 ms (OURS until summon AI)"
+      }
+    }
+  }
+}

@@ -1,0 +1,12 @@
+{
+  "rules": [
+    {
+      "host": "sdk.gpa.ncsoft.com",
+      "method": "POST",
+      "path": "/api/device/data",
+      "status": 200,
+      "content_type": "application/json",
+      "body": "{\"errorCode\":0,\"message\":\"success\"}"
+    }
+  ]
+}
