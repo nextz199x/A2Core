@@ -254,7 +254,7 @@ public sealed partial class GameSession
             var damage = target.Landed(Godstones.ProcDamage(stone));
             if (damage > 0 && !target.Dead && !target.Immune)
             {
-                target.Hp = Math.Max(0, target.Hp - damage);
+                target.Hp = ApplyDamageToNpc(target, damage);
                 var effect = Godstones.ProcEffectId(stone);
                 replies.Add(GamePackets.SkillHit(target.Key, playerKey, skill, effect, damage, false, 99));
                 replies.Add(GamePackets.NpcHp(target.Key, target.Hp));

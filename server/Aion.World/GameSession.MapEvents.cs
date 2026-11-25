@@ -1705,7 +1705,7 @@ public sealed partial class GameSession : IMapEventHost
                     d.NextAt += d.IntervalMs;
                     amount = t.Landed(amount);
                     if (t.Immune) amount = 0;
-                    t.Hp = Math.Max(0, t.Hp - amount);
+                    t.Hp = ApplyDamageToNpc(t, amount);
                     mapEventOut.Add(d.Scaled
                         ? RidePackets.AbnormalDamage(t.Key, playerKey, b.Uid, d.EffectId, amount, b.SkillId)
                         : RidePackets.AbnormalEffect(t.Key, playerKey, b.Uid, d.EffectId, d.Remaining, amount, b.SkillId));
