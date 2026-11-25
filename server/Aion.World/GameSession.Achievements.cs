@@ -162,7 +162,13 @@ public sealed partial class GameSession
         {
             var state = new AchievementState { Count = record.Count, CompletedMs = record.CompletedAt?.ToUnixTimeMilliseconds() ?? 0, RewardedStep = record.RewardedStep, UpdatedMs = record.UpdatedAt.ToUnixTimeMilliseconds() };
             if (Achievements.Of(record.Id) is { Type: "Attendance" })
+            {
                 state.Count = Math.Max(state.Count, state.RewardedStep);
+                // The official attendance rows carry the last check-in time as complete (capture 20261124-130131: the
+                // 7/7, 14/14 and 25/28 boards all have it). A zero complete time made the client treat the board as
+                // never attended: the attendance window popped up on every login and its claim button stayed.
+                if (state.CompletedMs == 0) state.CompletedMs = state.UpdatedMs;
+            }
             // Daily / weekly / monthly missions start over after their cycle (game day 07:00 UTC; weekly Wednesday 07:00 UTC; monthly day 1 07:00 UTC).
             if (Achievements.Of(record.Id) is { Reset: 1 or 2 or 3 or 4 } entry && ContentResetSchedule.AchievementCycleStartMs(entry.Reset, now) > state.UpdatedMs)
                 state = new AchievementState { UpdatedMs = now };
@@ -820,6 +826,9 @@ public sealed partial class GameSession
         {
             var state = achievements.GetValueOrDefault(board.Achievement);
             if (state is { UpdatedMs: > 0 } && state.UpdatedMs >= today && state.Count > 0) continue;
+            // Stamp the check-in time as complete before the count update is built, like the official rows.
+            if (state is null) achievements[board.Achievement] = state = new AchievementState();
+            if (state.CompletedMs == 0) state.CompletedMs = now;
             checkIn.AddRange(Achieve("Attendance", 1, e => e.Id == board.Achievement, now));
         }
         if (checkIn.Count > 0) await FlushAchievementsAsync(now, ct, force: true);
